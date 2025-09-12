@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/metrics"
 )
 
-const SingleNodeConsolidationTimeoutDuration = 3 * time.Minute
+const SingleNodeConsolidationTimeoutDuration = 60 * time.Minute
 
 // SingleNodeConsolidation is the consolidation controller that performs single-node consolidation.
 type SingleNodeConsolidation struct {
@@ -55,6 +55,8 @@ func (s *SingleNodeConsolidation) ComputeCommand(ctx context.Context, disruption
 	// Set a timeout
 	timeout := s.clock.Now().Add(SingleNodeConsolidationTimeoutDuration)
 	constrainedByBudgets := false
+	
+	logging.FromContext(ctx).Debugf("single-node consolidation: start binary search for %d candidates", len(candidates))
 	// binary search to find the maximum number of NodeClaims we can terminate
 	for i, candidate := range candidates {
 		// If the disruption budget doesn't allow this candidate to be disrupted,
@@ -69,6 +71,9 @@ func (s *SingleNodeConsolidation) ComputeCommand(ctx context.Context, disruption
 			logging.FromContext(ctx).Debugf("abandoning single-node consolidation due to timeout after evaluating %d candidates", i)
 			return Command{}, scheduling.Results{}, nil
 		}
+		
+		logging.FromContext(ctx).Debugf("single-node consolidation: start computeConsolidation for %s", candidate.Name())
+		startComputeConsolidation := time.Now()
 		// compute a possible consolidation option
 		cmd, results, err := s.computeConsolidation(ctx, candidate)
 		if err != nil {
@@ -76,8 +81,12 @@ func (s *SingleNodeConsolidation) ComputeCommand(ctx context.Context, disruption
 			continue
 		}
 		if cmd.Action() == NoOpAction {
+			logging.FromContext(ctx).Debugf("single-node consolidation: computeConsolidation for %s returned NoOp", candidate.Name())
 			continue
 		}
+		logging.FromContext(ctx).Debugf("single-node consolidation: computeConsolidation for %s took %s", candidate.Name(), time.Since(startComputeConsolidation))
+
+		startIsValid := time.Now()
 		isValid, err := v.IsValid(ctx, cmd)
 		if err != nil {
 			return Command{}, scheduling.Results{}, fmt.Errorf("validating consolidation, %w", err)
@@ -86,6 +95,7 @@ func (s *SingleNodeConsolidation) ComputeCommand(ctx context.Context, disruption
 			logging.FromContext(ctx).Debugf("abandoning single-node consolidation attempt due to pod churn, command is no longer valid, %s", cmd)
 			return Command{}, scheduling.Results{}, nil
 		}
+		logging.FromContext(ctx).Debugf("single-node consolidation: validation for %s took %s", candidate.Name(), time.Since(startIsValid))
 		return cmd, results, nil
 	}
 	if !constrainedByBudgets {
