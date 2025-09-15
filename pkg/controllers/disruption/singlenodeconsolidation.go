@@ -55,7 +55,7 @@ func (s *SingleNodeConsolidation) ComputeCommand(ctx context.Context, disruption
 	// Set a timeout
 	timeout := s.clock.Now().Add(SingleNodeConsolidationTimeoutDuration)
 	constrainedByBudgets := false
-	
+
 	logging.FromContext(ctx).Debugf("single-node consolidation: start binary search for %d candidates", len(candidates))
 	// binary search to find the maximum number of NodeClaims we can terminate
 	for i, candidate := range candidates {
@@ -71,7 +71,7 @@ func (s *SingleNodeConsolidation) ComputeCommand(ctx context.Context, disruption
 			logging.FromContext(ctx).Debugf("abandoning single-node consolidation due to timeout after evaluating %d candidates", i)
 			return Command{}, scheduling.Results{}, nil
 		}
-		
+
 		logging.FromContext(ctx).Debugf("single-node consolidation: start computeConsolidation for %s", candidate.Name())
 		startComputeConsolidation := time.Now()
 		// compute a possible consolidation option
@@ -81,7 +81,7 @@ func (s *SingleNodeConsolidation) ComputeCommand(ctx context.Context, disruption
 			continue
 		}
 		if cmd.Action() == NoOpAction {
-			logging.FromContext(ctx).Debugf("single-node consolidation: computeConsolidation for %s returned NoOp", candidate.Name())
+			logging.FromContext(ctx).Debugf("single-node consolidation: computeConsolidation for %s returned NoOp, took %s", candidate.Name(), time.Since(startComputeConsolidation))
 			continue
 		}
 		logging.FromContext(ctx).Debugf("single-node consolidation: computeConsolidation for %s took %s", candidate.Name(), time.Since(startComputeConsolidation))

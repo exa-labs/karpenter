@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"github.com/samber/lo"
+	lop "github.com/samber/lo/parallel"
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -29,17 +30,35 @@ import (
 
 // GetPods grabs all pods that are currently bound to the passed nodes
 func GetPods(ctx context.Context, kubeClient client.Client, nodes ...*v1.Node) ([]*v1.Pod, error) {
-	var pods []*v1.Pod
-	for _, node := range nodes {
+	results := lop.Map(nodes, func(node *v1.Node, _ int) struct {
+		pods []*v1.Pod
+		err  error
+	} {
 		var podList v1.PodList
 		if err := kubeClient.List(ctx, &podList, client.MatchingFields{"spec.nodeName": node.Name}); err != nil {
-			return nil, fmt.Errorf("listing pods, %w", err)
+			return struct {
+				pods []*v1.Pod
+				err  error
+			}{nil, fmt.Errorf("listing pods, %w", err)}
 		}
+		var pods []*v1.Pod
 		for i := range podList.Items {
 			pods = append(pods, &podList.Items[i])
 		}
+		return struct {
+			pods []*v1.Pod
+			err  error
+		}{pods, nil}
+	})
+
+	var allPods []*v1.Pod
+	for _, r := range results {
+		if r.err != nil {
+			return nil, r.err
+		}
+		allPods = append(allPods, r.pods...)
 	}
-	return pods, nil
+	return allPods, nil
 }
 
 // GetReschedulablePods grabs all pods from the passed nodes that satisfy the IsReschedulable criteria

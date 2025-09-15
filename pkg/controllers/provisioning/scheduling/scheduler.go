@@ -148,6 +148,7 @@ func (s *Scheduler) Solve(ctx context.Context, pods []*v1.Pod) Results {
 	errors := map[*v1.Pod]error{}
 	q := NewQueue(pods...)
 	for {
+		var popStartTime = time.Now()
 		// Try the next pod
 		pod, ok := q.Pop()
 		if !ok {
@@ -156,11 +157,15 @@ func (s *Scheduler) Solve(ctx context.Context, pods []*v1.Pod) Results {
 
 		// Schedule to existing nodes or create a new node
 		if errors[pod] = s.add(ctx, pod); errors[pod] == nil {
+			logging.FromContext(ctx).Debugf("pop took %s", time.Since(popStartTime))
 			continue
 		}
+		logging.FromContext(ctx).Debugf("pop took %s", time.Since(popStartTime))
 
+		var startRelaxStartTime = time.Now()
 		// If unsuccessful, relax the pod and recompute topology
 		relaxed := s.preferences.Relax(ctx, pod)
+		logging.FromContext(ctx).Debugf("relax took %s", time.Since(startRelaxStartTime))
 		q.Push(pod, relaxed)
 		if relaxed {
 			if err := s.topology.Update(ctx, pod); err != nil {
@@ -169,11 +174,15 @@ func (s *Scheduler) Solve(ctx context.Context, pods []*v1.Pod) Results {
 		}
 	}
 
+	var startFinalizeSchedulingStartTime = time.Now()
 	for _, m := range s.newNodeClaims {
 		m.FinalizeScheduling()
 	}
+	logging.FromContext(ctx).Debugf("finalize scheduling took %s", time.Since(startFinalizeSchedulingStartTime))
 	if !s.opts.SimulationMode {
+		var startRecordSchedulingResultsStartTime = time.Now()
 		s.recordSchedulingResults(ctx, pods, q.List(), errors, time.Since(schedulingStart))
+		logging.FromContext(ctx).Debugf("record scheduling results took %s", time.Since(startRecordSchedulingResultsStartTime))
 	}
 	// clear any nil errors so we can know that len(PodErrors) == 0 => all pods scheduled
 	for k, v := range errors {
@@ -236,30 +245,40 @@ func (s *Scheduler) recordSchedulingResults(ctx context.Context, pods []*v1.Pod,
 }
 
 func (s *Scheduler) add(ctx context.Context, pod *v1.Pod) error {
+	var startAddStartTime = time.Now()
+	logging.FromContext(ctx).Debugf("start node add for %d pods", len(s.existingNodes))
 	// first try to schedule against an in-flight real node
 	for _, node := range s.existingNodes {
 		if err := node.Add(ctx, s.kubeClient, pod); err == nil {
 			return nil
 		}
 	}
+	logging.FromContext(ctx).Debugf("node add took %s", time.Since(startAddStartTime))
 
 	// Consider using https://pkg.go.dev/container/heap
 	sort.Slice(s.newNodeClaims, func(a, b int) bool { return len(s.newNodeClaims[a].Pods) < len(s.newNodeClaims[b].Pods) })
 
+	var startNodeClaimAddStartTime = time.Now()
+	logging.FromContext(ctx).Debugf("start node claim add for %d pods", len(s.newNodeClaims))
 	// Pick existing node that we are about to create
 	for _, nodeClaim := range s.newNodeClaims {
 		if err := nodeClaim.Add(pod); err == nil {
 			return nil
 		}
 	}
+	logging.FromContext(ctx).Debugf("node claim add took %s", time.Since(startNodeClaimAddStartTime))
 
 	// Create new node
+	logging.FromContext(ctx).Debugf("start node claim template add for %d pods", len(s.nodeClaimTemplates))
 	var errs error
 	for _, nodeClaimTemplate := range s.nodeClaimTemplates {
 		instanceTypes := s.instanceTypes[nodeClaimTemplate.NodePoolName]
 		// if limits have been applied to the nodepool, ensure we filter instance types to avoid violating those limits
 		if remaining, ok := s.remainingResources[nodeClaimTemplate.NodePoolName]; ok {
+			var startFilterByRemainingResourcesStartTime = time.Now()
+			logging.FromContext(ctx).Debugf("start filter by remaining resources for %d pods", len(s.nodeClaimTemplates))
 			instanceTypes = filterByRemainingResources(s.instanceTypes[nodeClaimTemplate.NodePoolName], remaining)
+			logging.FromContext(ctx).Debugf("filter by remaining resources took %s", time.Since(startFilterByRemainingResourcesStartTime))
 			if len(instanceTypes) == 0 {
 				errs = multierr.Append(errs, fmt.Errorf("all available instance types exceed limits for nodepool: %q", nodeClaimTemplate.NodePoolName))
 				continue
@@ -268,6 +287,8 @@ func (s *Scheduler) add(ctx context.Context, pod *v1.Pod) error {
 					len(s.instanceTypes[nodeClaimTemplate.NodePoolName])-len(instanceTypes), len(s.instanceTypes[nodeClaimTemplate.NodePoolName]))
 			}
 		}
+		var startNewNodeClaimStartTime = time.Now()
+		logging.FromContext(ctx).Debugf("start new node claim for %d pods", len(s.nodeClaimTemplates))
 		nodeClaim := NewNodeClaim(nodeClaimTemplate, s.topology, s.daemonOverhead[nodeClaimTemplate], instanceTypes)
 		if err := nodeClaim.Add(pod); err != nil {
 			errs = multierr.Append(errs, fmt.Errorf("incompatible with nodepool %q, daemonset overhead=%s, %w",
@@ -276,6 +297,7 @@ func (s *Scheduler) add(ctx context.Context, pod *v1.Pod) error {
 				err))
 			continue
 		}
+		logging.FromContext(ctx).Debugf("new node claim took %s", time.Since(startNewNodeClaimStartTime))
 		// we will launch this nodeClaim and need to track its maximum possible resource usage against our remaining resources
 		s.newNodeClaims = append(s.newNodeClaims, nodeClaim)
 		s.remainingResources[nodeClaimTemplate.NodePoolName] = subtractMax(s.remainingResources[nodeClaimTemplate.NodePoolName], nodeClaim.InstanceTypeOptions)

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"time"
 
 	"github.com/samber/lo"
 
@@ -64,32 +65,49 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 		return pscheduling.Results{}, errCandidateDeleting
 	}
 
+	var reschedulablePodsStartTime = time.Now()
+	logging.FromContext(ctx).Debugf("start reschedulable pods for %d candidates", len(candidates))
 	// We get the pods that are on nodes that are deleting
 	deletingNodePods, err := deletingNodes.ReschedulablePods(ctx, kubeClient)
 	if err != nil {
 		return pscheduling.Results{}, fmt.Errorf("failed to get pods from deleting nodes, %w", err)
 	}
+	logging.FromContext(ctx).Debugf("reschedulable pods took %s for %d candidates", time.Since(reschedulablePodsStartTime), len(candidates))
+
+	var pendingPodsStartTime = time.Now()
+	logging.FromContext(ctx).Debugf("start pending pods for %d candidates", len(candidates))
 	// start by getting all pending pods
 	pods, err := provisioner.GetPendingPods(ctx)
 	if err != nil {
 		return pscheduling.Results{}, fmt.Errorf("determining pending pods, %w", err)
 	}
+	logging.FromContext(ctx).Debugf("pending pods took %s for %d candidates", time.Since(pendingPodsStartTime), len(candidates))
 	for _, n := range candidates {
 		pods = append(pods, n.reschedulablePods...)
 	}
 	pods = append(pods, deletingNodePods...)
+
+	var schedulerStartTime = time.Now()
+	logging.FromContext(ctx).Debugf("start scheduler for %d candidates", len(candidates))
 	scheduler, err := provisioner.NewScheduler(ctx, pods, stateNodes, pscheduling.SchedulerOptions{
 		SimulationMode: true,
 	})
 	if err != nil {
 		return pscheduling.Results{}, fmt.Errorf("creating scheduler, %w", err)
 	}
+	logging.FromContext(ctx).Debugf("scheduler took %s for %d candidates", time.Since(schedulerStartTime), len(candidates))
 
 	deletingNodePodKeys := lo.SliceToMap(deletingNodePods, func(p *v1.Pod) (client.ObjectKey, interface{}) {
 		return client.ObjectKeyFromObject(p), nil
 	})
 
+	var solveStartTime = time.Now()
+	logging.FromContext(ctx).Debugf("start solve for %d candidates", len(candidates))
 	results := scheduler.Solve(ctx, pods)
+	logging.FromContext(ctx).Debugf("solve took %s for %d candidates", time.Since(solveStartTime), len(candidates))
+
+	var startExistingNodesStartTime = time.Now()
+	logging.FromContext(ctx).Debugf("start existing nodes for %d candidates", len(candidates))
 	for _, n := range results.ExistingNodes {
 		// We consider existing nodes for scheduling. When these nodes are unmanaged, their taint logic should
 		// tell us if we can schedule to them or not; however, if these nodes are managed, we will still schedule to them
@@ -110,7 +128,7 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 			}
 		}
 	}
-
+	logging.FromContext(ctx).Debugf("existing nodes took %s for %d candidates", time.Since(startExistingNodesStartTime), len(candidates))
 	return results, nil
 }
 

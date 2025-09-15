@@ -26,6 +26,7 @@ import (
 	"github.com/samber/lo"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/utils/clock"
+	"knative.dev/pkg/logging"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"sigs.k8s.io/karpenter/pkg/apis/v1alpha5"
@@ -117,6 +118,8 @@ func (c *consolidation) sortCandidates(candidates []*Candidate) []*Candidate {
 // nolint:gocyclo
 func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...*Candidate) (Command, pscheduling.Results, error) {
 	var err error
+	var startSimulateScheduling = time.Now()
+	logging.FromContext(ctx).Debugf("start simulate scheduling for %d candidates", len(candidates))
 	// Run scheduling simulation to compute consolidation option
 	results, err := SimulateScheduling(ctx, c.kubeClient, c.cluster, c.provisioner, candidates...)
 	if err != nil {
@@ -126,7 +129,10 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 		}
 		return Command{}, pscheduling.Results{}, err
 	}
+	logging.FromContext(ctx).Debugf("simulate scheduling took %s for %d candidates", time.Since(startSimulateScheduling), len(candidates))
 
+	var startAllNonPendingPodsScheduled = time.Now()
+	logging.FromContext(ctx).Debugf("start all non pending pods scheduled for %d candidates", len(candidates))
 	// if not all of the pods were scheduled, we can't do anything
 	if !results.AllNonPendingPodsScheduled() {
 		// This method is used by multi-node consolidation as well, so we'll only report in the single node case
@@ -135,6 +141,7 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 		}
 		return Command{}, pscheduling.Results{}, nil
 	}
+	logging.FromContext(ctx).Debugf("all non pending pods scheduled took %s for %d candidates", time.Since(startAllNonPendingPodsScheduled), len(candidates))
 
 	// were we able to schedule all the pods on the inflight candidates?
 	if len(results.NewNodeClaims) == 0 {
@@ -148,15 +155,19 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 		if len(candidates) == 1 {
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Can't remove without creating %d candidates", len(results.NewNodeClaims)))...)
 		}
+		logging.FromContext(ctx).Debugf("can't remove without creating %d candidates", len(results.NewNodeClaims))
 		return Command{}, pscheduling.Results{}, nil
 	}
 
+	var startGetCandidatePrices = time.Now()
+	logging.FromContext(ctx).Debugf("start get candidate prices for %d candidates", len(candidates))
 	// get the current node price based on the offering
 	// fallback if we can't find the specific zonal pricing data
 	candidatePrice, err := getCandidatePrices(candidates)
 	if err != nil {
 		return Command{}, pscheduling.Results{}, fmt.Errorf("getting offering price from candidate node, %w", err)
 	}
+	logging.FromContext(ctx).Debugf("get candidate prices took %s for %d candidates", time.Since(startGetCandidatePrices), len(candidates))
 
 	allExistingAreSpot := true
 	for _, cn := range candidates {
@@ -165,20 +176,27 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 		}
 	}
 
+	var startComputeSpotToSpotConsolidation = time.Now()
+	logging.FromContext(ctx).Debugf("start compute spot to spot consolidation for %d candidates", len(candidates))
 	if allExistingAreSpot &&
 		results.NewNodeClaims[0].Requirements.Get(v1beta1.CapacityTypeLabelKey).Has(v1beta1.CapacityTypeSpot) {
+		logging.FromContext(ctx).Debugf("compute spot to spot consolidation took %s for %d candidates", time.Since(startComputeSpotToSpotConsolidation), len(candidates))
 		return c.computeSpotToSpotConsolidation(ctx, candidates, results, candidatePrice)
 	}
 
+	var startFilterByPrice = time.Now()
+	logging.FromContext(ctx).Debugf("start filter by price for %d candidates", len(candidates))
 	// filterByPrice returns the instanceTypes that are lower priced than the current candidate. If we use this directly for spot-to-spot consolidation
 	// we are bound to get repeated consolidations because the strategy that chooses to launch the spot instance from the list does it based on availability and price which could
 	// result in selection/launch of non-lowest priced instance in the list. So, we would keep repeating this loop till we get to lowest priced instance
 	// causing churns and landing onto lower available spot instance ultimately resulting in higher interruptions.
 	results.NewNodeClaims[0].NodeClaimTemplate.InstanceTypeOptions = filterByPrice(results.NewNodeClaims[0].InstanceTypeOptions, results.NewNodeClaims[0].Requirements, candidatePrice)
+	logging.FromContext(ctx).Debugf("filter by price took %s for %d candidates", time.Since(startFilterByPrice), len(candidates))
 	if len(results.NewNodeClaims[0].NodeClaimTemplate.InstanceTypeOptions) == 0 {
 		if len(candidates) == 1 {
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, "Can't replace with a cheaper node")...)
 		}
+		logging.FromContext(ctx).Debugf("can't replace with a cheaper node for %d candidates", len(candidates))
 		return Command{}, pscheduling.Results{}, nil
 	}
 
@@ -186,11 +204,13 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 	// assumption, that the spot variant will launch. We also need to add a requirement to the node to ensure that if
 	// spot capacity is insufficient we don't replace the node with a more expensive on-demand node.  Instead the launch
 	// should fail and we'll just leave the node alone.
+	var startAddRequirement = time.Now()
+	logging.FromContext(ctx).Debugf("start add requirement for %d candidates", len(candidates))
 	ctReq := results.NewNodeClaims[0].Requirements.Get(v1beta1.CapacityTypeLabelKey)
 	if ctReq.Has(v1beta1.CapacityTypeSpot) && ctReq.Has(v1beta1.CapacityTypeOnDemand) {
 		results.NewNodeClaims[0].Requirements.Add(scheduling.NewRequirement(v1beta1.CapacityTypeLabelKey, v1.NodeSelectorOpIn, v1beta1.CapacityTypeSpot))
 	}
-
+	logging.FromContext(ctx).Debugf("add requirement took %s for %d candidates", time.Since(startAddRequirement), len(candidates))
 	return Command{
 		candidates:   candidates,
 		replacements: results.NewNodeClaims,
