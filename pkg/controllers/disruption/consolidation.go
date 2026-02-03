@@ -155,6 +155,13 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 		if len(candidates) == 1 {
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Can't remove without creating %d candidates", len(results.NewNodeClaims)))...)
 		}
+		// Log which pods are causing the NewNodeClaims to help debug consolidation blockers
+		for i, nc := range results.NewNodeClaims {
+			podNames := lo.Map(nc.Pods, func(p *v1.Pod, _ int) string {
+				return fmt.Sprintf("%s/%s", p.Namespace, p.Name)
+			})
+			logging.FromContext(ctx).Debugf("NewNodeClaim[%d] would be created for pods: %v", i, podNames)
+		}
 		logging.FromContext(ctx).Debugf("can't remove without creating %d candidates", len(results.NewNodeClaims))
 		return Command{}, pscheduling.Results{}, nil
 	}
