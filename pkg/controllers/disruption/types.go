@@ -89,16 +89,11 @@ type Candidate struct {
 func (c *Candidate) PDBBlocked() bool { return c.pdbBlocked }
 
 // isSinglePDBBlockError returns true when the error from ValidatePodsDisruptable
-// is specifically "pdb prevents pod evictions" from a single PDB. It returns
-// false for do-not-disrupt annotation errors and multiple-PDB errors, which
-// should still reject the candidate outright.
+// is a PDB block from a single PDB. It returns false for do-not-disrupt
+// annotation errors and multiple-PDB errors, which should still reject the
+// candidate outright.
 func isSinglePDBBlockError(err error) bool {
-	if err == nil || !state.IsPodBlockEvictionError(err) {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "pdb prevents pod evictions") &&
-		!strings.Contains(msg, "multiple PDBs")
+	return state.GetPDBBlockReason(err) == state.PDBBlockReasonSinglePDB
 }
 
 func (c *Candidate) OwnedByStaticNodePool() bool {

@@ -53,6 +53,13 @@ type RollingRestart struct {
 // workloads have NOT opted in are rejected identically to the pre-rolling-restart
 // behavior. Nodes that have no reschedulable pods at all (e.g. only DaemonSet or
 // mirror pods) are also rejected since there is nothing to rolling-restart.
+//
+// NOTE: This function issues API server calls (Get ReplicaSet, Get Deployment/
+// StatefulSet) for each reschedulable pod. It runs in the NewCandidate hot path
+// for every single-PDB-blocked node. The early-reject tradeoff is intentional:
+// without it, ineligible PDB-blocked nodes would pollute scheduling simulations
+// and multi-node binary search. The loop short-circuits on the first ineligible
+// pod to minimize API calls in the rejection case.
 func podsEligibleForRollingRestart(ctx context.Context, kubeClient client.Client, pods []*corev1.Pod) bool {
 	found := false
 	for _, po := range pods {
@@ -78,7 +85,7 @@ func collectRestartTargets(ctx context.Context, kubeClient client.Client, clk cl
 	var restarts []RollingRestart
 
 	for _, po := range pods {
-		if !podutil.IsEvictable(po) {
+		if !podutil.IsReschedulable(po) {
 			continue
 		}
 		owner, err := resolveRestartTarget(ctx, kubeClient, po)

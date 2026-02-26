@@ -338,9 +338,10 @@ func (q *Queue) StartCommand(ctx context.Context, cmd *Command) error {
 		if err := triggerRollingRestarts(ctx, q.kubeClient, q.clock, cmd.Restarts); err != nil {
 			RollingRestartErrorsCounter.Inc(map[string]string{actionLabel: "trigger"})
 			stateNodes := lo.Map(cmd.Candidates, func(c *Candidate, _ int) *state.StateNode { return c.StateNode })
-			return multierr.Append(
+			return multierr.Combine(
 				serrors.Wrap(fmt.Errorf("triggering rolling restarts, %w", err), "command-id", cmd.ID),
 				state.RequireNoScheduleTaint(ctx, q.kubeClient, false, stateNodes...),
+				state.ClearNodeClaimsCondition(ctx, q.kubeClient, v1.ConditionTypeDisruptionReason, stateNodes...),
 			)
 		}
 	}

@@ -33,7 +33,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/utils/pdb"
 )
 
-var SingleNodeConsolidationTimeoutDuration = 60 * time.Minute
+var SingleNodeConsolidationTimeoutDuration = 3 * time.Minute
 
 const SingleNodeConsolidationType = "single"
 
