@@ -208,8 +208,35 @@ var _ = Describe("Rolling Restart Consolidation", func() {
 	}
 
 	Context("Candidate Creation", func() {
-		It("should create candidates for PDB-blocked nodes instead of returning an error", func() {
+		It("should create candidates for PDB-blocked nodes with annotated owners", func() {
 			podLabels := map[string]string{"pdb-test": "blocked"}
+			_, _, pods, pdbObj := setupDeploymentWithPDB(podLabels, 1)
+
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim, node, pods[0], pdbObj)
+			ExpectManualBinding(ctx, env.Client, pods[0], node)
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client,
+				nodeStateController, nodeClaimStateController,
+				[]*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
+
+			nodePoolMap, nodePoolToInstanceTypesMap, err := disruption.BuildNodePoolMap(ctx, env.Client, cloudProvider)
+			Expect(err).To(Succeed())
+
+			pdbs, err := pdb.NewLimits(ctx, env.Client)
+			Expect(err).To(Succeed())
+
+			Expect(cluster.Nodes()).To(HaveLen(1))
+			stateNode := ExpectStateNodeExists(cluster, node)
+			candidate, err := disruption.NewCandidate(ctx, env.Client, recorder, fakeClock,
+				stateNode, pdbs, nodePoolMap, nodePoolToInstanceTypesMap, queue, disruption.GracefulDisruptionClass)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(candidate).ToNot(BeNil())
+			Expect(candidate.NodeClaim).ToNot(BeNil())
+			Expect(candidate.Node).ToNot(BeNil())
+			Expect(candidate.PDBBlocked()).To(BeTrue())
+		})
+
+		It("should reject PDB-blocked nodes without annotated owners", func() {
+			podLabels := map[string]string{"pdb-test": "no-annotation"}
 			pod := test.Pod(test.PodOptions{
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
 			})
@@ -231,19 +258,34 @@ var _ = Describe("Rolling Restart Consolidation", func() {
 
 			Expect(cluster.Nodes()).To(HaveLen(1))
 			stateNode := ExpectStateNodeExists(cluster, node)
-			candidate, err := disruption.NewCandidate(ctx, env.Client, recorder, fakeClock,
+			_, err = disruption.NewCandidate(ctx, env.Client, recorder, fakeClock,
 				stateNode, pdbs, nodePoolMap, nodePoolToInstanceTypesMap, queue, disruption.GracefulDisruptionClass)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(candidate).ToNot(BeNil())
-			Expect(candidate.NodeClaim).ToNot(BeNil())
-			Expect(candidate.Node).ToNot(BeNil())
-			Expect(candidate.PDBBlocked()).To(BeTrue())
+			Expect(err).To(HaveOccurred())
 		})
 	})
 
 	Context("Consolidation ShouldDisrupt", func() {
-		It("should include PDB-blocked candidates for consolidation", func() {
+		It("should include PDB-blocked candidates with annotated owners for consolidation", func() {
 			podLabels := map[string]string{"pdb-test": "consolidation"}
+			_, _, pods, pdbObj := setupDeploymentWithPDB(podLabels, 1)
+
+			ExpectApplied(ctx, env.Client, nodePool, nodeClaim, node, pods[0], pdbObj)
+			ExpectManualBinding(ctx, env.Client, pods[0], node)
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client,
+				nodeStateController, nodeClaimStateController,
+				[]*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
+
+			c := disruption.MakeConsolidation(fakeClock, cluster, env.Client, prov, cloudProvider, recorder, queue)
+			snc := disruption.NewSingleNodeConsolidation(c)
+
+			candidates, err := disruption.GetCandidates(ctx, cluster, env.Client, recorder,
+				fakeClock, cloudProvider, snc.ShouldDisrupt, snc.Class(), queue)
+			Expect(err).To(Succeed())
+			Expect(candidates).To(HaveLen(1))
+		})
+
+		It("should not include PDB-blocked candidates without annotated owners for consolidation", func() {
+			podLabels := map[string]string{"pdb-test": "no-annotation-consolidation"}
 			pod := test.Pod(test.PodOptions{
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
 			})
@@ -263,7 +305,7 @@ var _ = Describe("Rolling Restart Consolidation", func() {
 			candidates, err := disruption.GetCandidates(ctx, cluster, env.Client, recorder,
 				fakeClock, cloudProvider, snc.ShouldDisrupt, snc.Class(), queue)
 			Expect(err).To(Succeed())
-			Expect(candidates).To(HaveLen(1))
+			Expect(candidates).To(HaveLen(0))
 		})
 	})
 
@@ -296,6 +338,7 @@ var _ = Describe("Rolling Restart Consolidation", func() {
 				Replicas: int32(1),
 				Labels:   podLabels,
 			})
+			// Explicitly do NOT add AllowRollingRestartAnnotationKey
 			ExpectApplied(ctx, env.Client, deploy)
 
 			rs := test.ReplicaSet()
@@ -340,18 +383,14 @@ var _ = Describe("Rolling Restart Consolidation", func() {
 				[]*v1.NodeClaim{nodeClaim, receiverNodeClaim})
 
 			c := disruption.MakeConsolidation(fakeClock, cluster, env.Client, prov, cloudProvider, recorder, queue)
-			snc := disruption.NewSingleNodeConsolidation(c, disruption.WithValidator(NopValidator{}))
+			snc := disruption.NewSingleNodeConsolidation(c)
 
-			budgets, err := disruption.BuildDisruptionBudgetMapping(ctx, cluster, fakeClock, env.Client, cloudProvider, recorder, snc.Reason())
-			Expect(err).To(Succeed())
-
+			// The PDB-blocked node without annotation should be rejected at
+			// candidate creation time, so GetCandidates returns 0 candidates.
 			candidates, err := disruption.GetCandidates(ctx, cluster, env.Client, recorder,
 				fakeClock, cloudProvider, snc.ShouldDisrupt, snc.Class(), queue)
 			Expect(err).To(Succeed())
-
-			cmds, err := snc.ComputeCommands(ctx, budgets, candidates...)
-			Expect(err).To(Succeed())
-			Expect(cmds).To(HaveLen(0))
+			Expect(candidates).To(HaveLen(0))
 		})
 
 		It("should consolidate a StatefulSet-backed PDB-blocked node via rolling restart", func() {

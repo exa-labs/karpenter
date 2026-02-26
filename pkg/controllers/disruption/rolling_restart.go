@@ -46,6 +46,31 @@ type RollingRestart struct {
 	Kind      string // "Deployment" or "StatefulSet"
 }
 
+// podsEligibleForRollingRestart returns true when there is at least one
+// reschedulable pod on the node AND every such pod has an owning Deployment or
+// StatefulSet that carries the AllowRollingRestartAnnotationKey annotation.
+// This is called at candidate creation time so that PDB-blocked nodes whose
+// workloads have NOT opted in are rejected identically to the pre-rolling-restart
+// behavior. Nodes that have no reschedulable pods at all (e.g. only DaemonSet or
+// mirror pods) are also rejected since there is nothing to rolling-restart.
+func podsEligibleForRollingRestart(ctx context.Context, kubeClient client.Client, pods []*corev1.Pod) bool {
+	found := false
+	for _, po := range pods {
+		if !podutil.IsReschedulable(po) {
+			continue
+		}
+		found = true
+		owner, err := resolveRestartTarget(ctx, kubeClient, po)
+		if err != nil {
+			return false
+		}
+		if err := checkAllowRollingRestart(ctx, kubeClient, owner); err != nil {
+			return false
+		}
+	}
+	return found
+}
+
 // collectRestartTargets walks the owner chain of each pod to find the owning Deployment
 // or StatefulSet, deduplicating across pods that share the same owner.
 func collectRestartTargets(ctx context.Context, kubeClient client.Client, clk clock.Clock, pods []*corev1.Pod) ([]RollingRestart, error) {
