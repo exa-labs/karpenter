@@ -101,7 +101,7 @@ func resolveRestartTarget(ctx context.Context, kubeClient client.Client, po *cor
 					}, nil
 				}
 			}
-			return RollingRestart{}, fmt.Errorf("ReplicaSet %s/%s is not owned by a Deployment", po.Namespace, ref.Name)
+			return RollingRestart{}, fmt.Errorf("replicaSet %s/%s is not owned by a Deployment", po.Namespace, ref.Name)
 		}
 	}
 	return RollingRestart{}, fmt.Errorf("pod %s/%s has no restartable owner", po.Namespace, po.Name)
@@ -119,7 +119,7 @@ func checkAllowRollingRestart(ctx context.Context, kubeClient client.Client, r R
 			return fmt.Errorf("getting Deployment %s: %w", nn, err)
 		}
 		if deploy.Annotations[v1.AllowRollingRestartAnnotationKey] != "true" {
-			return fmt.Errorf("Deployment %s missing %s annotation", nn, v1.AllowRollingRestartAnnotationKey)
+			return fmt.Errorf("deployment %s missing %s annotation", nn, v1.AllowRollingRestartAnnotationKey)
 		}
 	case "StatefulSet":
 		sts := &appsv1.StatefulSet{}
@@ -127,7 +127,7 @@ func checkAllowRollingRestart(ctx context.Context, kubeClient client.Client, r R
 			return fmt.Errorf("getting StatefulSet %s: %w", nn, err)
 		}
 		if sts.Annotations[v1.AllowRollingRestartAnnotationKey] != "true" {
-			return fmt.Errorf("StatefulSet %s missing %s annotation", nn, v1.AllowRollingRestartAnnotationKey)
+			return fmt.Errorf("statefulSet %s missing %s annotation", nn, v1.AllowRollingRestartAnnotationKey)
 		}
 	default:
 		return fmt.Errorf("unsupported workload kind %q for rolling restart annotation check", r.Kind)
