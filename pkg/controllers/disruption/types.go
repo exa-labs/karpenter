@@ -141,18 +141,18 @@ func NewCandidate(ctx context.Context, kubeClient client.Client, recorder events
 		eventualDisruptionCandidate := node.NodeClaim.Spec.TerminationGracePeriod != nil && disruptionClass == EventualDisruptionClass
 		if eventualDisruptionCandidate && state.IgnorePodBlockEvictionError(err) == nil {
 			// Eventual disruption ignores PDB block errors — existing behavior
-			} else if isSinglePDBBlockError(err) {
-				// A single PDB with zero allowed disruptions blocks standard eviction.
-				// Only mark as PDB-blocked if all reschedulable pods belong to workloads
-				// that have opted in via the AllowRollingRestartAnnotationKey annotation.
-					// Without the annotation the node is rejected identically to before.
-					if podsEligibleForRollingRestart(ctx, kubeClient, pods) {
-					isPDBBlocked = true
-				} else {
-					recorder.Publish(disruptionevents.Blocked(node.Node, node.NodeClaim, pretty.Sentence(err.Error()))...)
-					return nil, err
-				}
+		} else if isSinglePDBBlockError(err) {
+			// A single PDB with zero allowed disruptions blocks standard eviction.
+			// Only mark as PDB-blocked if all reschedulable pods belong to workloads
+			// that have opted in via the AllowRollingRestartAnnotationKey annotation.
+			// Without the annotation the node is rejected identically to before.
+			if podsEligibleForRollingRestart(ctx, kubeClient, pods) {
+				isPDBBlocked = true
 			} else {
+				recorder.Publish(disruptionevents.Blocked(node.Node, node.NodeClaim, pretty.Sentence(err.Error()))...)
+				return nil, err
+			}
+		} else {
 			recorder.Publish(disruptionevents.Blocked(node.Node, node.NodeClaim, pretty.Sentence(err.Error()))...)
 			return nil, err
 		}
