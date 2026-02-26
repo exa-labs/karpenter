@@ -44,12 +44,26 @@ import (
 	"sigs.k8s.io/karpenter/pkg/utils/resources"
 )
 
+// PDBBlockReason classifies why pod eviction is blocked.
+type PDBBlockReason int
+
+const (
+	PDBBlockReasonOther       PDBBlockReason = iota // do-not-disrupt or unknown
+	PDBBlockReasonSinglePDB                         // single PDB with zero allowed disruptions
+	PDBBlockReasonMultiplePDB                       // multiple PDBs on the same pod
+)
+
 type PodBlockEvictionError struct {
 	error
+	PDBReason PDBBlockReason
 }
 
 func NewPodBlockEvictionError(err error) *PodBlockEvictionError {
-	return &PodBlockEvictionError{error: err}
+	return &PodBlockEvictionError{error: err, PDBReason: PDBBlockReasonOther}
+}
+
+func NewPodBlockEvictionErrorWithReason(err error, reason PDBBlockReason) *PodBlockEvictionError {
+	return &PodBlockEvictionError{error: err, PDBReason: reason}
 }
 
 func IsPodBlockEvictionError(err error) bool {
@@ -58,6 +72,19 @@ func IsPodBlockEvictionError(err error) bool {
 	}
 	var podBlockEvictionError *PodBlockEvictionError
 	return stderrors.As(err, &podBlockEvictionError)
+}
+
+// GetPDBBlockReason extracts the PDBBlockReason from a PodBlockEvictionError.
+// Returns PDBBlockReasonOther if the error is nil or not a PodBlockEvictionError.
+func GetPDBBlockReason(err error) PDBBlockReason {
+	if err == nil {
+		return PDBBlockReasonOther
+	}
+	var podBlockEvictionError *PodBlockEvictionError
+	if stderrors.As(err, &podBlockEvictionError) {
+		return podBlockEvictionError.PDBReason
+	}
+	return PDBBlockReasonOther
 }
 
 func IgnorePodBlockEvictionError(err error) error {
@@ -246,9 +273,9 @@ func (in *StateNode) ValidatePodsDisruptable(ctx context.Context, kubeClient cli
 	}
 	if pdbKeys, ok := pdbs.CanEvictPods(pods); !ok {
 		if len(pdbKeys) > 1 {
-			return pods, NewPodBlockEvictionError(serrors.Wrap(fmt.Errorf("eviction does not support multiple PDBs"), "PodDisruptionBudget(s)", pdbKeys))
+			return pods, NewPodBlockEvictionErrorWithReason(serrors.Wrap(fmt.Errorf("eviction does not support multiple PDBs"), "PodDisruptionBudget(s)", pdbKeys), PDBBlockReasonMultiplePDB)
 		}
-		return pods, NewPodBlockEvictionError(serrors.Wrap(fmt.Errorf("pdb prevents pod evictions"), "PodDisruptionBudget", pdbKeys))
+		return pods, NewPodBlockEvictionErrorWithReason(serrors.Wrap(fmt.Errorf("pdb prevents pod evictions"), "PodDisruptionBudget", pdbKeys), PDBBlockReasonSinglePDB)
 	}
 
 	return pods, nil

@@ -48,6 +48,7 @@ const (
 // Karpenter specific annotations
 const (
 	DoNotDisruptAnnotationKey                  = apis.Group + "/do-not-disrupt"
+	AllowRollingRestartAnnotationKey           = apis.Group + "/allow-rolling-restart"
 	ProviderCompatibilityAnnotationKey         = apis.CompatibilityGroup + "/provider"
 	NodePoolHashAnnotationKey                  = apis.Group + "/nodepool-hash"
 	NodePoolHashVersionAnnotationKey           = apis.Group + "/nodepool-hash-version"
