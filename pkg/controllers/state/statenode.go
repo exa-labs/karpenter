@@ -48,7 +48,7 @@ import (
 type PDBBlockReason int
 
 const (
-	PDBBlockReasonOther      PDBBlockReason = iota // do-not-disrupt or unknown
+	PDBBlockReasonOther       PDBBlockReason = iota // do-not-disrupt or unknown
 	PDBBlockReasonSinglePDB                         // single PDB with zero allowed disruptions
 	PDBBlockReasonMultiplePDB                       // multiple PDBs on the same pod
 )
