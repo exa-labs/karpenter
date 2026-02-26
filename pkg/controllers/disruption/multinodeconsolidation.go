@@ -25,10 +25,12 @@ import (
 
 	"github.com/awslabs/operatorpkg/option"
 	"github.com/samber/lo"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	"sigs.k8s.io/karpenter/pkg/metrics"
 	scheduler "sigs.k8s.io/karpenter/pkg/scheduling"
 )
 
@@ -99,6 +101,28 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 			m.markConsolidated()
 		}
 		return []Command{}, nil
+	}
+
+	// Collect rolling restart targets for any PDB-blocked candidates in the command.
+	pdbCandidates := lo.Filter(cmd.Candidates, func(c *Candidate, _ int) bool { return c.pdbBlocked })
+	if len(pdbCandidates) > 0 {
+		var allPods []*corev1.Pod
+		for _, c := range pdbCandidates {
+			allPods = append(allPods, c.reschedulablePods...)
+		}
+		restarts, restartErr := collectRestartTargets(ctx, m.kubeClient, m.clock, allPods)
+		if restartErr != nil {
+			log.FromContext(ctx).V(1).Info("failed to collect restart targets for multi-node consolidation", "error", restartErr)
+			RollingRestartErrorsCounter.Inc(map[string]string{actionLabel: "collect_targets"})
+			return []Command{}, nil
+		}
+		cmd.Restarts = restarts
+		for _, r := range restarts {
+			RollingRestartTriggeredCounter.Inc(map[string]string{
+				workloadKindLabel:     r.Kind,
+				metrics.NodePoolLabel: pdbCandidates[0].NodePool.Name,
+			})
+		}
 	}
 
 	if cmd, err = m.validator.Validate(ctx, cmd, consolidationTTL); err != nil {
