@@ -1140,10 +1140,9 @@ var _ = Describe("Candidate Filtering", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		Expect(cluster.DeepCopyNodes()).To(HaveLen(1))
-		_, err = disruption.NewCandidate(ctx, env.Client, recorder, fakeClock, cluster.DeepCopyNodes()[0], pdbLimits, nodePoolMap, nodePoolInstanceTypeMap, queue, disruption.GracefulDisruptionClass)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(Equal(fmt.Sprintf(`pdb prevents pod evictions (PodDisruptionBudget=[%s])`, client.ObjectKeyFromObject(budget))))
-		Expect(recorder.DetectedEvent(fmt.Sprintf(`Pdb prevents pod evictions (PodDisruptionBudget=[%s])`, client.ObjectKeyFromObject(budget)))).To(BeTrue())
+		c, err := disruption.NewCandidate(ctx, env.Client, recorder, fakeClock, cluster.DeepCopyNodes()[0], pdbLimits, nodePoolMap, nodePoolInstanceTypeMap, queue, disruption.GracefulDisruptionClass)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(c.PDBBlocked()).To(BeTrue())
 	})
 	It("should not consider candidates that have do-not-disrupt pods scheduled without a terminationGracePeriod set for eventual disruption", func() {
 		nodeClaim, node := test.NodeClaimAndNode(v1.NodeClaim{
@@ -1203,10 +1202,9 @@ var _ = Describe("Candidate Filtering", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		Expect(cluster.DeepCopyNodes()).To(HaveLen(1))
-		_, err = disruption.NewCandidate(ctx, env.Client, recorder, fakeClock, cluster.DeepCopyNodes()[0], pdbLimits, nodePoolMap, nodePoolInstanceTypeMap, queue, disruption.EventualDisruptionClass)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(Equal(fmt.Sprintf(`pdb prevents pod evictions (PodDisruptionBudget=[%s])`, client.ObjectKeyFromObject(budget))))
-		Expect(recorder.DetectedEvent(fmt.Sprintf(`Pdb prevents pod evictions (PodDisruptionBudget=[%s])`, client.ObjectKeyFromObject(budget)))).To(BeTrue())
+		c, err := disruption.NewCandidate(ctx, env.Client, recorder, fakeClock, cluster.DeepCopyNodes()[0], pdbLimits, nodePoolMap, nodePoolInstanceTypeMap, queue, disruption.EventualDisruptionClass)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(c.PDBBlocked()).To(BeTrue())
 	})
 	It("should consider candidates that have do-not-disrupt terminating pods", func() {
 		nodeClaim, node := test.NodeClaimAndNode(v1.NodeClaim{
@@ -1380,10 +1378,9 @@ var _ = Describe("Candidate Filtering", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		Expect(cluster.DeepCopyNodes()).To(HaveLen(1))
-		_, err = disruption.NewCandidate(ctx, env.Client, recorder, fakeClock, cluster.DeepCopyNodes()[0], pdbLimits, nodePoolMap, nodePoolInstanceTypeMap, queue, disruption.GracefulDisruptionClass)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(Equal(fmt.Sprintf(`pdb prevents pod evictions (PodDisruptionBudget=[%s])`, client.ObjectKeyFromObject(budget))))
-		Expect(recorder.DetectedEvent(fmt.Sprintf(`Pdb prevents pod evictions (PodDisruptionBudget=[%s])`, client.ObjectKeyFromObject(budget)))).To(BeTrue())
+		c, err := disruption.NewCandidate(ctx, env.Client, recorder, fakeClock, cluster.DeepCopyNodes()[0], pdbLimits, nodePoolMap, nodePoolInstanceTypeMap, queue, disruption.GracefulDisruptionClass)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(c.PDBBlocked()).To(BeTrue())
 	})
 	It("should not consider candidates that have fully blocking PDBs on daemonset pods", func() {
 		daemonSet := test.DaemonSet()
@@ -1427,10 +1424,9 @@ var _ = Describe("Candidate Filtering", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		Expect(cluster.DeepCopyNodes()).To(HaveLen(1))
-		_, err = disruption.NewCandidate(ctx, env.Client, recorder, fakeClock, cluster.DeepCopyNodes()[0], pdbLimits, nodePoolMap, nodePoolInstanceTypeMap, queue, disruption.GracefulDisruptionClass)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(Equal(fmt.Sprintf(`pdb prevents pod evictions (PodDisruptionBudget=[%s])`, client.ObjectKeyFromObject(budget))))
-		Expect(recorder.DetectedEvent(fmt.Sprintf(`Pdb prevents pod evictions (PodDisruptionBudget=[%s])`, client.ObjectKeyFromObject(budget)))).To(BeTrue())
+		c, err := disruption.NewCandidate(ctx, env.Client, recorder, fakeClock, cluster.DeepCopyNodes()[0], pdbLimits, nodePoolMap, nodePoolInstanceTypeMap, queue, disruption.GracefulDisruptionClass)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(c.PDBBlocked()).To(BeTrue())
 	})
 	It("should consider candidates that have fully blocking PDBs on mirror pods", func() {
 		nodeClaim, node := test.NodeClaimAndNode(v1.NodeClaim{
@@ -1538,10 +1534,9 @@ var _ = Describe("Candidate Filtering", func() {
 		Expect(err).ToNot(HaveOccurred())
 
 		Expect(cluster.DeepCopyNodes()).To(HaveLen(1))
-		_, err = disruption.NewCandidate(ctx, env.Client, recorder, fakeClock, cluster.DeepCopyNodes()[0], pdbLimits, nodePoolMap, nodePoolInstanceTypeMap, queue, disruption.GracefulDisruptionClass)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(Equal(fmt.Sprintf(`pdb prevents pod evictions (PodDisruptionBudget=[%s])`, client.ObjectKeyFromObject(budget))))
-		Expect(recorder.DetectedEvent(fmt.Sprintf(`Pdb prevents pod evictions (PodDisruptionBudget=[%s])`, client.ObjectKeyFromObject(budget)))).To(BeTrue())
+		c, err := disruption.NewCandidate(ctx, env.Client, recorder, fakeClock, cluster.DeepCopyNodes()[0], pdbLimits, nodePoolMap, nodePoolInstanceTypeMap, queue, disruption.GracefulDisruptionClass)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(c.PDBBlocked()).To(BeTrue())
 	})
 	It("should consider candidates that have fully blocking PDBs on terminal pods", func() {
 		nodeClaim, node := test.NodeClaimAndNode(v1.NodeClaim{

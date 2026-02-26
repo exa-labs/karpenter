@@ -29,6 +29,8 @@ const (
 	decisionLabel                = "decision"
 	ConsolidationTypeLabel       = "consolidation_type"
 	CandidatesIneligible         = "candidates_ineligible"
+	workloadKindLabel            = "workload_kind"
+	actionLabel                  = "action"
 )
 
 func init() {
@@ -127,5 +129,45 @@ var (
 			Help:      "The number of times that an enqueued disruption decision failed. Labeled by disruption method.",
 		},
 		[]string{decisionLabel, metrics.ReasonLabel, ConsolidationTypeLabel},
+	)
+	RollingRestartTriggeredCounter = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "rolling_restart_triggered_total",
+			Help:      "Number of rolling restarts triggered for PDB-blocked consolidation. Labeled by workload kind and nodepool.",
+		},
+		[]string{workloadKindLabel, metrics.NodePoolLabel},
+	)
+	RollingRestartSkippedDeduplicatedCounter = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "rolling_restart_skipped_deduplicated_total",
+			Help:      "Number of rolling restarts skipped because the workload was already restarted recently.",
+		},
+		[]string{workloadKindLabel},
+	)
+	RollingRestartCandidatesGauge = opmetrics.NewPrometheusGauge(
+		crmetrics.Registry,
+		prometheus.GaugeOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "rolling_restart_candidates",
+			Help:      "Number of PDB-blocked candidates eligible for rolling restart consolidation.",
+		},
+		[]string{},
+	)
+	RollingRestartErrorsCounter = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "rolling_restart_errors_total",
+			Help:      "Number of errors encountered during rolling restart consolidation. Labeled by action.",
+		},
+		[]string{actionLabel},
 	)
 )

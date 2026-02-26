@@ -79,6 +79,26 @@ type Candidate struct {
 	capacityType      string
 	DisruptionCost    float64
 	reschedulablePods []*corev1.Pod
+	// pdbBlocked is true when a PodDisruptionBudget with zero disruptions allowed
+	// prevents standard pod eviction on this node. Consolidation handles these
+	// candidates via rolling restart of owning workloads instead of eviction.
+	pdbBlocked bool
+}
+
+// PDBBlocked returns true when pod eviction on this node is blocked by a PDB.
+func (c *Candidate) PDBBlocked() bool { return c.pdbBlocked }
+
+// isSinglePDBBlockError returns true when the error from ValidatePodsDisruptable
+// is specifically "pdb prevents pod evictions" from a single PDB. It returns
+// false for do-not-disrupt annotation errors and multiple-PDB errors, which
+// should still reject the candidate outright.
+func isSinglePDBBlockError(err error) bool {
+	if err == nil || !state.IsPodBlockEvictionError(err) {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "pdb prevents pod evictions") &&
+		!strings.Contains(msg, "multiple PDBs")
 }
 
 func (c *Candidate) OwnedByStaticNodePool() bool {
@@ -113,12 +133,20 @@ func NewCandidate(ctx context.Context, kubeClient client.Client, recorder events
 	}
 	// We only care if instanceType in non-empty consolidation to do price-comparison.
 	instanceType := instanceTypeMap[node.Labels()[corev1.LabelInstanceTypeStable]]
+	isPDBBlocked := false
 	if pods, err = node.ValidatePodsDisruptable(ctx, kubeClient, pdbs); err != nil {
 		// If the NodeClaim has a TerminationGracePeriod set and the disruption class is eventual, the node should be
 		// considered a candidate even if there's a pod that will block eviction. Other error types should still cause
 		// failure creating the candidate.
 		eventualDisruptionCandidate := node.NodeClaim.Spec.TerminationGracePeriod != nil && disruptionClass == EventualDisruptionClass
-		if lo.Ternary(eventualDisruptionCandidate, state.IgnorePodBlockEvictionError(err), err) != nil {
+		if eventualDisruptionCandidate && state.IgnorePodBlockEvictionError(err) == nil {
+			// Eventual disruption ignores PDB block errors — existing behavior
+		} else if isSinglePDBBlockError(err) {
+			// A single PDB with zero allowed disruptions blocks standard eviction. Mark
+			// this candidate as PDB-blocked so consolidation can handle it via rolling
+			// restart of owning workloads instead of eviction.
+			isPDBBlocked = true
+		} else {
 			recorder.Publish(disruptionevents.Blocked(node.Node, node.NodeClaim, pretty.Sentence(err.Error()))...)
 			return nil, err
 		}
@@ -130,6 +158,7 @@ func NewCandidate(ctx context.Context, kubeClient client.Client, recorder events
 		capacityType:      node.Labels()[v1.CapacityTypeLabelKey],
 		zone:              node.Labels()[corev1.LabelTopologyZone],
 		reschedulablePods: lo.Filter(pods, func(p *corev1.Pod, _ int) bool { return pod.IsReschedulable(p) }),
+		pdbBlocked:        isPDBBlocked,
 		// We get the disruption cost from all pods in the candidate, not just the reschedulable pods
 		DisruptionCost: disruptionutils.ReschedulingCost(ctx, pods) * disruptionutils.LifetimeRemaining(clk, nodePool, node.NodeClaim),
 	}, nil
@@ -160,6 +189,10 @@ type Command struct {
 	Results      scheduling.Results
 	Candidates   []*Candidate
 	Replacements []*Replacement
+	// Restarts holds workloads that should be rolling-restarted after the candidate
+	// nodes are cordoned. Used when PDB-blocked nodes are consolidated via rolling
+	// restart instead of pod eviction.
+	Restarts []RollingRestart
 }
 
 type Decision string

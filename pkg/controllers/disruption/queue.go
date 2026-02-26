@@ -331,6 +331,20 @@ func (q *Queue) StartCommand(ctx context.Context, cmd *Command) error {
 	// Update the command to only consider the successfully MarkDisrupted candidates
 	cmd.Candidates = markedCandidates
 
+	// When the command includes rolling restart targets (PDB-blocked consolidation),
+	// trigger them after cordoning so workload controllers create new pods on
+	// uncordoned nodes and delete the old pods without going through eviction.
+	if len(cmd.Restarts) > 0 {
+		if err := triggerRollingRestarts(ctx, q.kubeClient, q.clock, cmd.Restarts); err != nil {
+			RollingRestartErrorsCounter.Inc(map[string]string{actionLabel: "trigger"})
+			stateNodes := lo.Map(cmd.Candidates, func(c *Candidate, _ int) *state.StateNode { return c.StateNode })
+			return multierr.Append(
+				serrors.Wrap(fmt.Errorf("triggering rolling restarts, %w", err), "command-id", cmd.ID),
+				state.RequireNoScheduleTaint(ctx, q.kubeClient, false, stateNodes...),
+			)
+		}
+	}
+
 	if err := q.createReplacementNodeClaims(ctx, cmd); err != nil {
 		// If we failed to launch the replacement, don't disrupt.  If this is some permanent failure,
 		// we don't want to disrupt workloads with no way to provision new nodes for them.
