@@ -29,6 +29,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	"sigs.k8s.io/karpenter/pkg/metrics"
+	"sigs.k8s.io/karpenter/pkg/utils/pdb"
 )
 
 var SingleNodeConsolidationTimeoutDuration = 3 * time.Minute
@@ -65,6 +67,15 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 
 	unseenNodePools := sets.New(lo.Map(candidates, func(c *Candidate, _ int) string { return c.NodePool.Name })...)
 
+	// Count PDB-blocked candidates for the rolling restart gauge.
+	pdbBlockedCount := 0
+	for _, c := range candidates {
+		if c.pdbBlocked {
+			pdbBlockedCount++
+		}
+	}
+	RollingRestartCandidatesGauge.Set(float64(pdbBlockedCount), map[string]string{})
+
 	for i, candidate := range candidates {
 		if s.clock.Now().After(timeout) {
 			ConsolidationTimeoutsTotal.Inc(map[string]string{ConsolidationTypeLabel: s.ConsolidationType()})
@@ -89,6 +100,35 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 		// can find their nodes disrupted here.
 		if len(candidate.reschedulablePods) == 0 {
 			continue
+		}
+
+		// PDB-blocked candidates are handled via rolling restart: instead of evicting
+		// pods (which the PDB prevents), we trigger rolling restarts on owning
+		// Deployments/StatefulSets after cordoning the node.
+		if candidate.pdbBlocked {
+			cmd, err := s.computeRollingRestartCommand(ctx, candidate)
+			if err != nil {
+				log.FromContext(ctx).V(1).Info("skipping PDB-blocked candidate for rolling restart", "node", candidate.Name(), "error", err)
+				RollingRestartErrorsCounter.Inc(map[string]string{actionLabel: "collect_targets"})
+				continue
+			}
+			if cmd.Decision() == NoOpDecision {
+				continue
+			}
+			if _, err = s.validator.Validate(ctx, cmd, consolidationTTL); err != nil {
+				if IsValidationError(err) {
+					RollingRestartErrorsCounter.Inc(map[string]string{actionLabel: "validation"})
+					return []Command{}, nil
+				}
+				return []Command{}, fmt.Errorf("validating rolling restart consolidation, %w", err)
+			}
+			for _, r := range cmd.Restarts {
+				RollingRestartTriggeredCounter.Inc(map[string]string{
+					workloadKindLabel:     r.Kind,
+					metrics.NodePoolLabel: candidate.NodePool.Name,
+				})
+			}
+			return []Command{cmd}, nil
 		}
 
 		// compute a possible consolidation option
@@ -121,6 +161,32 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 	s.PreviouslyUnseenNodePools = unseenNodePools
 
 	return []Command{}, nil
+}
+
+// computeRollingRestartCommand builds a Command for a PDB-blocked candidate that
+// will be consolidated via rolling restart of owning workloads.
+func (s *SingleNodeConsolidation) computeRollingRestartCommand(ctx context.Context, candidate *Candidate) (Command, error) {
+	if candidate.Annotations()[v1.DoNotDisruptAnnotationKey] == "true" {
+		return Command{}, nil
+	}
+	// Re-verify that pods are still PDB-blocked; the PDB may have been
+	// modified or deleted since GetCandidates ran.
+	pdbs, err := pdb.NewLimits(ctx, s.kubeClient)
+	if err != nil {
+		return Command{}, fmt.Errorf("re-fetching PDB limits for %s: %w", candidate.Name(), err)
+	}
+	if _, ok := pdbs.CanEvictPods(candidate.reschedulablePods); ok {
+		log.FromContext(ctx).V(1).Info("PDB no longer blocks eviction, skipping rolling restart", "node", candidate.Name())
+		return Command{}, nil
+	}
+	restarts, err := collectRestartTargets(ctx, s.kubeClient, s.clock, candidate.reschedulablePods)
+	if err != nil {
+		return Command{}, fmt.Errorf("collecting restart targets for %s: %w", candidate.Name(), err)
+	}
+	if len(restarts) == 0 {
+		return Command{}, nil
+	}
+	return Command{Candidates: []*Candidate{candidate}, Restarts: restarts}, nil
 }
 
 func (s *SingleNodeConsolidation) Reason() v1.DisruptionReason {

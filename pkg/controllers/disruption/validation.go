@@ -271,6 +271,19 @@ func (c *ConsolidationValidator) validateCandidates(ctx context.Context, candida
 		FailedValidationsTotal.Add(float64(len(candidates)), map[string]string{ConsolidationTypeLabel: c.validationType})
 		return nil, NewChurnValidationError(fmt.Errorf("%d candidates are no longer valid", len(candidates)-len(validatedCandidates)))
 	}
+	// Reject if any candidate's PDB-blocked status changed during the TTL wait.
+	// A PDB appearing (non-PDB→blocked) or disappearing (blocked→non-PDB) means
+	// the cluster state changed materially and the command is no longer valid.
+	originalPDBBlocked := make(map[string]bool, len(candidates))
+	for _, cn := range candidates {
+		originalPDBBlocked[cn.Name()] = cn.pdbBlocked
+	}
+	for _, vc := range validatedCandidates {
+		if vc.pdbBlocked != originalPDBBlocked[vc.Name()] {
+			FailedValidationsTotal.Add(float64(len(candidates)), map[string]string{ConsolidationTypeLabel: c.validationType})
+			return nil, NewChurnValidationError(fmt.Errorf("PDB-blocked status changed for candidate %s", vc.Name()))
+		}
+	}
 	disruptionBudgetMapping, err := BuildDisruptionBudgetMapping(ctx, c.cluster, c.clock, c.kubeClient, c.cloudProvider, c.recorder, c.reason)
 	if err != nil {
 		return nil, fmt.Errorf("building disruption budgets, %w", err)
