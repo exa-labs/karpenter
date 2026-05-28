@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	"sigs.k8s.io/karpenter/pkg/scheduling"
 )
 
 var SingleNodeConsolidationTimeoutDuration = 3 * time.Minute
@@ -38,16 +39,18 @@ const SingleNodeConsolidationType = "single"
 // SingleNodeConsolidation is the consolidation controller that performs single-node consolidation.
 type SingleNodeConsolidation struct {
 	consolidation
-	PreviouslyUnseenNodePools sets.Set[string]
-	validator                 Validator
+	PreviouslyUnseenNodePools  sets.Set[string]
+	previouslyFailedCandidates sets.Set[string]
+	validator                  Validator
 }
 
 func NewSingleNodeConsolidation(c consolidation, opts ...option.Function[MethodOptions]) *SingleNodeConsolidation {
 	o := option.Resolve(append([]option.Function[MethodOptions]{WithValidator(NewSingleConsolidationValidator(c))}, opts...)...)
 	return &SingleNodeConsolidation{
-		consolidation:             c,
-		PreviouslyUnseenNodePools: sets.New[string](),
-		validator:                 o.validator,
+		consolidation:              c,
+		PreviouslyUnseenNodePools:  sets.New[string](),
+		previouslyFailedCandidates: sets.New[string](),
+		validator:                  o.validator,
 	}
 }
 
@@ -62,6 +65,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 	// Set a timeout
 	timeout := s.clock.Now().Add(SingleNodeConsolidationTimeoutDuration)
 	constrainedByBudgets := false
+	failedThisCycle := sets.New[string]()
 
 	unseenNodePools := sets.New(lo.Map(candidates, func(c *Candidate, _ int) string { return c.NodePool.Name })...)
 
@@ -71,6 +75,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 			log.FromContext(ctx).V(1).Info("abandoning single-node consolidation due to timeout", "candidates_evaluated", i)
 
 			s.PreviouslyUnseenNodePools = unseenNodePools
+			s.previouslyFailedCandidates = failedThisCycle
 
 			return []Command{}, nil
 		}
@@ -95,19 +100,24 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 		cmd, err := s.computeConsolidation(ctx, candidate)
 		if err != nil {
 			log.FromContext(ctx).Error(err, "failed computing consolidation")
+			failedThisCycle.Insert(candidate.Name())
 			continue
 		}
 		if cmd.Decision() == NoOpDecision {
+			failedThisCycle.Insert(candidate.Name())
 			continue
 		}
 		if _, err = s.validator.Validate(ctx, cmd, consolidationTTL); err != nil {
 			if IsValidationError(err) {
 				reason := getValidationFailureReason(err)
 				cmd.EmitRejectedEvents(s.recorder, reason)
+				s.previouslyFailedCandidates = failedThisCycle
 				return []Command{}, nil
 			}
 			return []Command{}, fmt.Errorf("validating consolidation, %w", err)
 		}
+		// Successful consolidation — reset failed tracking since cluster state will change
+		s.previouslyFailedCandidates = sets.New[string]()
 		return []Command{cmd}, nil
 	}
 
@@ -119,6 +129,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 	}
 
 	s.PreviouslyUnseenNodePools = unseenNodePools
+	s.previouslyFailedCandidates = failedThisCycle
 
 	return []Command{}, nil
 }
@@ -135,16 +146,40 @@ func (s *SingleNodeConsolidation) ConsolidationType() string {
 	return SingleNodeConsolidationType
 }
 
-// sortCandidates interweaves candidates from different nodepools and prioritizes nodepools
-// that timed out in previous runs
+// SortCandidates sorts candidates by potential cost savings (instance price descending)
+// and interweaves across nodepools to ensure fair evaluation. Candidates that failed
+// consolidation in the previous cycle are deprioritized within each nodepool so that
+// untried candidates get evaluated first.
 func (s *SingleNodeConsolidation) SortCandidates(ctx context.Context, candidates []*Candidate) []*Candidate {
-
-	// First sort by disruption cost as the base ordering
-	sort.Slice(candidates, func(i int, j int) bool {
+	// Sort by instance price descending (highest potential savings first).
+	// Tiebreaker: DisruptionCost ascending (lower-cost evictions preferred among same-priced instances).
+	sort.Slice(candidates, func(i, j int) bool {
+		priceI := candidateInstancePrice(candidates[i])
+		priceJ := candidateInstancePrice(candidates[j])
+		if priceI != priceJ {
+			return priceI > priceJ
+		}
 		return candidates[i].DisruptionCost < candidates[j].DisruptionCost
 	})
 
-	return s.shuffleCandidates(ctx, lo.GroupBy(candidates, func(c *Candidate) string { return c.NodePool.Name }))
+	grouped := lo.GroupBy(candidates, func(c *Candidate) string { return c.NodePool.Name })
+
+	// Within each pool, push previously-failed candidates to the end so that
+	// candidates that haven't been tried yet get evaluated first. This prevents
+	// repeatedly timing out on the same unconsolidatable nodes every cycle.
+	if s.previouslyFailedCandidates.Len() > 0 {
+		log.FromContext(ctx).V(1).Info("deprioritizing previously failed candidates", "count", s.previouslyFailedCandidates.Len())
+		for poolName, poolCandidates := range grouped {
+			sort.SliceStable(poolCandidates, func(i, j int) bool {
+				fi := s.previouslyFailedCandidates.Has(poolCandidates[i].Name())
+				fj := s.previouslyFailedCandidates.Has(poolCandidates[j].Name())
+				return !fi && fj
+			})
+			grouped[poolName] = poolCandidates
+		}
+	}
+
+	return s.shuffleCandidates(ctx, grouped)
 }
 
 func (s *SingleNodeConsolidation) shuffleCandidates(ctx context.Context, nodePoolCandidates map[string][]*Candidate) []*Candidate {
@@ -173,4 +208,18 @@ func (s *SingleNodeConsolidation) shuffleCandidates(ctx context.Context, nodePoo
 	}
 
 	return result
+}
+
+// candidateInstancePrice returns the hourly instance price for a candidate node.
+// Returns 0.0 if the price cannot be determined (missing instance type or offerings).
+func candidateInstancePrice(c *Candidate) float64 {
+	if c.instanceType == nil {
+		return 0.0
+	}
+	reqs := scheduling.NewLabelRequirements(c.Labels())
+	compatibleOfferings := c.instanceType.Offerings.Compatible(reqs)
+	if len(compatibleOfferings) == 0 {
+		return 0.0
+	}
+	return compatibleOfferings.Cheapest().Price
 }
