@@ -32,6 +32,7 @@ import (
 	pscheduling "sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	"sigs.k8s.io/karpenter/pkg/events"
+	"sigs.k8s.io/karpenter/pkg/scheduling"
 )
 
 type ValidationError struct {
@@ -337,10 +338,10 @@ func replacementsMatchNodeClaims(replacements []*Replacement, nodeClaims []*psch
 			if _, ok := unmatchedNodeClaims[nodeClaim]; !ok {
 				return false
 			}
-			if !instanceTypesAreSubset(replacement.InstanceTypeOptions, nodeClaim.InstanceTypeOptions) {
+			if !replacementMatchesNodeClaim(replacement, nodeClaim) {
 				return false
 			}
-			return nodeClaim.Requirements.Compatible(replacement.Requirements) == nil
+			return true
 		})
 		if !ok {
 			return false
@@ -348,6 +349,28 @@ func replacementsMatchNodeClaims(replacements []*Replacement, nodeClaims []*psch
 		delete(unmatchedNodeClaims, match)
 	}
 	return true
+}
+
+func replacementMatchesNodeClaim(replacement *Replacement, nodeClaim *pscheduling.NodeClaim) bool {
+	if !instanceTypesAreSubset(replacement.InstanceTypeOptions, nodeClaim.InstanceTypeOptions) {
+		return false
+	}
+	return reservedRequirementsCompatible(replacement.Requirements, nodeClaim.Requirements)
+}
+
+func reservedRequirementsCompatible(replacementRequirements, nodeClaimRequirements scheduling.Requirements) bool {
+	reservedRequirements := scheduling.NewRequirements()
+	if replacementRequirements.Get(v1.CapacityTypeLabelKey).Has(v1.CapacityTypeReserved) || lo.ContainsBy(cloudprovider.ReservedCapacityLabels.UnsortedList(), replacementRequirements.Has) {
+		if replacementRequirements.Has(v1.CapacityTypeLabelKey) {
+			reservedRequirements.Add(replacementRequirements.Get(v1.CapacityTypeLabelKey))
+		}
+		for label := range cloudprovider.ReservedCapacityLabels {
+			if replacementRequirements.Has(label) {
+				reservedRequirements.Add(replacementRequirements.Get(label))
+			}
+		}
+	}
+	return len(reservedRequirements) == 0 || nodeClaimRequirements.Compatible(reservedRequirements) == nil
 }
 
 // getValidationFailureReason categorizes validation errors into specific failure types
