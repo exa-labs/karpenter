@@ -29,6 +29,7 @@ import (
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/controllers/provisioning"
+	pscheduling "sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	"sigs.k8s.io/karpenter/pkg/events"
 )
@@ -298,7 +299,7 @@ func (v *validation) validateCommand(ctx context.Context, cmd Command, candidate
 	if len(candidates) == 0 {
 		return NewValidationError(fmt.Errorf("no candidates"))
 	}
-	results, err := SimulateScheduling(ctx, v.kubeClient, v.cluster, v.provisioner, candidates...)
+	results, err := simulateScheduling(ctx, v.kubeClient, v.cluster, v.provisioner, []pscheduling.Options{pscheduling.DisableReservedCapacityFallback}, candidates...)
 	if err != nil {
 		return fmt.Errorf("simluating scheduling, %w", err)
 	}
@@ -307,11 +308,6 @@ func (v *validation) validateCommand(ctx context.Context, cmd Command, candidate
 	}
 
 	// We want to ensure that the re-simulated scheduling using the current cluster state produces the same result.
-	// There are three possible options for the number of new candidates that we need to handle:
-	// len(NewNodeClaims) == 0, as long as we weren't expecting a new node, this is valid
-	// len(NewNodeClaims) > 1, something in the cluster changed so that the candidates we were going to delete can no longer
-	//                    be deleted without producing more than one node
-	// len(NewNodeClaims) == 1, as long as the noe looks like what we were expecting, this is valid
 	if len(results.NewNodeClaims) == 0 {
 		if len(cmd.Replacements) == 0 {
 			// scheduling produced zero new NodeClaims and we weren't expecting any, so this is valid.
@@ -322,36 +318,36 @@ func (v *validation) validateCommand(ctx context.Context, cmd Command, candidate
 		return NewSchedulingValidationError(fmt.Errorf("scheduling simulation produced new results"))
 	}
 
-	// we need more than one replacement node which is never valid currently (all of our node replacement is m->1, never m->n)
-	if len(results.NewNodeClaims) > 1 {
+	if len(results.NewNodeClaims) != len(cmd.Replacements) {
 		return NewSchedulingValidationError(fmt.Errorf("scheduling simulation produced new results"))
 	}
 
-	// we now know that scheduling simulation wants to create one new node
-	if len(cmd.Replacements) == 0 {
-		// but we weren't expecting any new NodeClaims, so this is invalid
+	if !replacementsMatchNodeClaims(cmd.Replacements, results.NewNodeClaims) {
 		return NewSchedulingValidationError(fmt.Errorf("scheduling simulation produced new results"))
 	}
-
-	// We know that the scheduling simulation wants to create a new node and that the command we are verifying wants
-	// to create a new node. The scheduling simulation doesn't apply any filtering to instance types, so it may include
-	// instance types that we don't want to launch which were filtered out when the lifecycleCommand was created.  To
-	// check if our lifecycleCommand is valid, we just want to ensure that the list of instance types we are considering
-	// creating are a subset of what scheduling says we should create.  We check for a subset since the scheduling
-	// simulation here does no price filtering, so it will include more expensive types.
-	//
-	// This is necessary since consolidation only wants cheaper NodeClaims.  Suppose consolidation determined we should delete
-	// a 4xlarge and replace it with a 2xlarge. If things have changed and the scheduling simulation we just performed
-	// now says that we need to launch a 4xlarge. It's still launching the correct number of NodeClaims, but it's just
-	// as expensive or possibly more so we shouldn't validate.
-	if !instanceTypesAreSubset(cmd.Replacements[0].InstanceTypeOptions, results.NewNodeClaims[0].InstanceTypeOptions) {
-		return NewSchedulingValidationError(fmt.Errorf("scheduling simulation produced new results"))
-	}
-
-	// Now we know:
-	// - current scheduling simulation says to create a new node with types T = {T_0, T_1, ..., T_n}
-	// - our lifecycle command says to create a node with types {U_0, U_1, ..., U_n} where U is a subset of T
 	return nil
+}
+
+func replacementsMatchNodeClaims(replacements []*Replacement, nodeClaims []*pscheduling.NodeClaim) bool {
+	unmatchedNodeClaims := lo.SliceToMap(nodeClaims, func(nc *pscheduling.NodeClaim) (*pscheduling.NodeClaim, struct{}) {
+		return nc, struct{}{}
+	})
+	for _, replacement := range replacements {
+		match, ok := lo.Find(nodeClaims, func(nodeClaim *pscheduling.NodeClaim) bool {
+			if _, ok := unmatchedNodeClaims[nodeClaim]; !ok {
+				return false
+			}
+			if !instanceTypesAreSubset(replacement.InstanceTypeOptions, nodeClaim.InstanceTypeOptions) {
+				return false
+			}
+			return nodeClaim.Requirements.Compatible(replacement.Requirements) == nil
+		})
+		if !ok {
+			return false
+		}
+		delete(unmatchedNodeClaims, match)
+	}
+	return true
 }
 
 // getValidationFailureReason categorizes validation errors into specific failure types
