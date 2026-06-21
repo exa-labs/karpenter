@@ -47,9 +47,15 @@ import (
 
 var errCandidateDeleting = fmt.Errorf("candidate is deleting")
 
-//nolint:gocyclo
 func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *state.Cluster, provisioner *provisioning.Provisioner,
 	candidates ...*Candidate,
+) (scheduling.Results, error) {
+	return simulateScheduling(ctx, kubeClient, cluster, provisioner, nil, candidates...)
+}
+
+//nolint:gocyclo
+func simulateScheduling(ctx context.Context, kubeClient client.Client, cluster *state.Cluster, provisioner *provisioning.Provisioner,
+	schedulerOpts []scheduling.Options, candidates ...*Candidate,
 ) (scheduling.Results, error) {
 	candidateNames := sets.NewString(lo.Map(candidates, func(t *Candidate, i int) string { return t.Name() })...)
 	nodes := cluster.DeepCopyNodes()
@@ -94,7 +100,7 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 	}
 	pods = append(pods, deletingNodePods...)
 
-	var opts []scheduling.Options
+	opts := append([]scheduling.Options{}, schedulerOpts...)
 	if options.FromContext(ctx).PreferencePolicy == options.PreferencePolicyIgnore {
 		opts = append(opts, scheduling.IgnorePreferences)
 	}

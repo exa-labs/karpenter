@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -136,7 +137,7 @@ func (c *consolidation) sortCandidates(candidates []*Candidate) []*Candidate {
 func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...*Candidate) (Command, error) {
 	var err error
 	// Run scheduling simulation to compute consolidation option
-	results, err := SimulateScheduling(ctx, c.kubeClient, c.cluster, c.provisioner, candidates...)
+	results, err := simulateScheduling(ctx, c.kubeClient, c.cluster, c.provisioner, []pscheduling.Options{pscheduling.DisableReservedCapacityFallback}, candidates...)
 	if err != nil {
 		// if a candidate node is now deleting, just retry
 		if errors.Is(err, errCandidateDeleting) {
@@ -154,25 +155,36 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 		return Command{}, nil
 	}
 
+	// get the current node price based on the offering
+	// fallback if we can't find the specific zonal pricing data
+	candidatePrice := getCandidatePrices(candidates)
+
 	// were we able to schedule all the pods on the inflight candidates?
 	if len(results.NewNodeClaims) == 0 {
+		if hasNonEmptyReservedCandidatesMovingToNonReservedCapacity(candidates, results) {
+			if len(candidates) == 1 {
+				c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, "Can't consolidate non-empty reserved node onto non-reserved capacity")...)
+			}
+			return Command{}, nil
+		}
 		return Command{
 			Candidates: candidates,
 			Results:    results,
 		}, nil
 	}
 
-	// we're not going to turn a single node into multiple candidates
 	if len(results.NewNodeClaims) != 1 {
+		if len(candidates) == 1 {
+			cmd := c.computeReservedMultiNodeReplacement(candidates, results, candidatePrice)
+			if cmd.Decision() != NoOpDecision {
+				return cmd, nil
+			}
+		}
 		if len(candidates) == 1 {
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Can't remove without creating %d candidates", len(results.NewNodeClaims)))...)
 		}
 		return Command{}, nil
 	}
-
-	// get the current node price based on the offering
-	// fallback if we can't find the specific zonal pricing data
-	candidatePrice := getCandidatePrices(candidates)
 
 	allExistingAreSpot := true
 	for _, cn := range candidates {
@@ -226,6 +238,84 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 	cmd.EmitCandidateEvents(c.recorder)
 
 	return cmd, nil
+}
+
+func (c *consolidation) computeReservedMultiNodeReplacement(candidates []*Candidate, results pscheduling.Results, candidatePrice float64) Command {
+	if !allNodeClaimsLaunchReservedOnly(results.NewNodeClaims) {
+		return Command{}
+	}
+	var err error
+	for i := range results.NewNodeClaims {
+		results.NewNodeClaims[i].InstanceTypeOptions = results.NewNodeClaims[i].InstanceTypeOptions.OrderByPrice(results.NewNodeClaims[i].Requirements)
+		results.NewNodeClaims[i], err = results.NewNodeClaims[i].RemoveInstanceTypeOptionsByPriceAndMinValues(results.NewNodeClaims[i].Requirements, candidatePrice)
+		if err != nil {
+			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Filtering by price: %v", err))...)
+			return Command{}
+		}
+		if len(results.NewNodeClaims[i].InstanceTypeOptions) == 0 {
+			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, "Can't replace with a cheaper node")...)
+			return Command{}
+		}
+	}
+	if price, ok := replacementNodeClaimsPrice(results.NewNodeClaims); !ok || price >= candidatePrice {
+		c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, "Can't replace with cheaper reserved nodes")...)
+		return Command{}
+	}
+	cmd := Command{
+		Candidates:   candidates,
+		Replacements: replacementsFromNodeClaims(results.NewNodeClaims...),
+		Results:      results,
+	}
+	cmd.EmitCandidateEvents(c.recorder)
+	return cmd
+}
+
+func hasNonEmptyReservedCandidatesMovingToNonReservedCapacity(candidates []*Candidate, results pscheduling.Results) bool {
+	for _, candidate := range candidates {
+		if candidate.capacityType != v1.CapacityTypeReserved || len(candidate.reschedulablePods) == 0 {
+			continue
+		}
+		for _, p := range candidate.reschedulablePods {
+			existingNode, ok := lo.Find(results.ExistingNodes, func(n *pscheduling.ExistingNode) bool {
+				return lo.ContainsBy(n.Pods, func(scheduledPod *corev1.Pod) bool {
+					return podsEqual(p, scheduledPod)
+				})
+			})
+			if !ok || existingNode.Labels()[v1.CapacityTypeLabelKey] != v1.CapacityTypeReserved {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func allNodeClaimsLaunchReservedOnly(nodeClaims []*pscheduling.NodeClaim) bool {
+	return len(nodeClaims) > 0 && lo.EveryBy(nodeClaims, func(nc *pscheduling.NodeClaim) bool {
+		capacityTypeRequirement := nc.Requirements.Get(v1.CapacityTypeLabelKey)
+		return capacityTypeRequirement.Len() == 1 && capacityTypeRequirement.Has(v1.CapacityTypeReserved)
+	})
+}
+
+func replacementNodeClaimsPrice(nodeClaims []*pscheduling.NodeClaim) (float64, bool) {
+	var price float64
+	for _, nodeClaim := range nodeClaims {
+		if len(nodeClaim.InstanceTypeOptions) == 0 {
+			return 0.0, false
+		}
+		launchPrice := nodeClaim.InstanceTypeOptions[0].Offerings.Available().WorstLaunchPrice(nodeClaim.Requirements)
+		if launchPrice == math.MaxFloat64 {
+			return 0.0, false
+		}
+		price += launchPrice
+	}
+	return price, true
+}
+
+func podsEqual(a, b *corev1.Pod) bool {
+	if a.UID != "" && b.UID != "" {
+		return a.UID == b.UID
+	}
+	return client.ObjectKeyFromObject(a) == client.ObjectKeyFromObject(b)
 }
 
 // Compute command to execute spot-to-spot consolidation if:

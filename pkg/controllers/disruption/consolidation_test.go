@@ -4616,6 +4616,161 @@ var _ = Describe("Consolidation", func() {
 			Entry("from on-demand", v1.CapacityTypeOnDemand),
 			Entry("from spot", v1.CapacityTypeSpot),
 		)
+		It("does not delete a non-empty reserved node onto existing non-reserved capacity", func() {
+			rs := test.ReplicaSet()
+			ExpectApplied(ctx, env.Client, rs)
+			Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(rs), rs)).To(Succeed())
+			pod := test.Pod(test.PodOptions{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion:         "apps/v1",
+							Kind:               "ReplicaSet",
+							Name:               rs.Name,
+							UID:                rs.UID,
+							Controller:         lo.ToPtr(true),
+							BlockOwnerDeletion: lo.ToPtr(true),
+						},
+					}},
+			})
+			ExpectApplied(ctx, env.Client, rs, pod, reservedNode, reservedNodeClaim, node, nodeClaim, nodePool)
+			ExpectManualBinding(ctx, env.Client, pod, reservedNode)
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, nodeStateController, nodeClaimStateController, []*corev1.Node{reservedNode, node}, []*v1.NodeClaim{reservedNodeClaim, nodeClaim})
+
+			c := disruption.MakeConsolidation(fakeClock, cluster, env.Client, prov, cloudProvider, recorder, queue)
+			singleNodeConsolidation := disruption.NewSingleNodeConsolidation(c, disruption.WithValidator(NopValidator{}))
+			budgets, err := disruption.BuildDisruptionBudgetMapping(ctx, cluster, fakeClock, env.Client, cloudProvider, recorder, singleNodeConsolidation.Reason())
+			Expect(err).To(Succeed())
+			candidates, err := disruption.GetCandidates(ctx, cluster, env.Client, recorder, fakeClock, cloudProvider, singleNodeConsolidation.ShouldDisrupt, singleNodeConsolidation.Class(), queue)
+			Expect(err).To(Succeed())
+			reservedCandidate, ok := lo.Find(candidates, func(candidate *disruption.Candidate) bool {
+				return candidate.NodeClaim.Name == reservedNodeClaim.Name
+			})
+			Expect(ok).To(BeTrue())
+
+			cmds, err := singleNodeConsolidation.ComputeCommands(ctx, budgets, reservedCandidate)
+			Expect(err).To(Succeed())
+			Expect(cmds).To(BeEmpty())
+		})
+		It("can replace one on-demand node with multiple reserved nodeclaims", func() {
+			reservationID := "r-small-reserved"
+			largeOnDemand := fake.NewInstanceType(fake.InstanceTypeOptions{
+				Name: "large-on-demand",
+				Resources: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("8"),
+					corev1.ResourceMemory: resource.MustParse("8Gi"),
+					corev1.ResourcePods:   resource.MustParse("10"),
+				},
+				Offerings: cloudprovider.Offerings{{
+					Available: true,
+					Price:     100.0,
+					Requirements: scheduling.NewLabelRequirements(map[string]string{
+						v1.CapacityTypeLabelKey:  v1.CapacityTypeOnDemand,
+						corev1.LabelTopologyZone: "test-zone-1",
+					}),
+				}},
+			})
+			smallReserved := fake.NewInstanceType(fake.InstanceTypeOptions{
+				Name: "small-reserved",
+				Resources: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("4"),
+					corev1.ResourceMemory: resource.MustParse("4Gi"),
+					corev1.ResourcePods:   resource.MustParse("10"),
+				},
+				Offerings: cloudprovider.Offerings{{
+					Available:           true,
+					Price:               0.00001,
+					ReservationCapacity: 2,
+					Requirements: scheduling.NewLabelRequirements(map[string]string{
+						v1.CapacityTypeLabelKey:     v1.CapacityTypeReserved,
+						corev1.LabelTopologyZone:    "test-zone-1",
+						v1alpha1.LabelReservationID: reservationID,
+					}),
+				}},
+			})
+			cloudProvider.InstanceTypes = []*cloudprovider.InstanceType{largeOnDemand, smallReserved}
+
+			nodePool.Spec.Template.Spec.Requirements = []v1.NodeSelectorRequirementWithMinValues{
+				{
+					Key:      v1.CapacityTypeLabelKey,
+					Operator: corev1.NodeSelectorOpIn,
+					Values:   []string{v1.CapacityTypeOnDemand, v1.CapacityTypeReserved},
+				},
+			}
+			onDemandNodeClaim, onDemandNode := test.NodeClaimAndNode(v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						v1.NodePoolLabelKey:            nodePool.Name,
+						corev1.LabelInstanceTypeStable: largeOnDemand.Name,
+						v1.CapacityTypeLabelKey:        v1.CapacityTypeOnDemand,
+						corev1.LabelTopologyZone:       "test-zone-1",
+					},
+				},
+				Status: v1.NodeClaimStatus{
+					Allocatable: map[corev1.ResourceName]resource.Quantity{
+						corev1.ResourceCPU:    resource.MustParse("8"),
+						corev1.ResourceMemory: resource.MustParse("8Gi"),
+						corev1.ResourcePods:   resource.MustParse("10"),
+					},
+				},
+			})
+			onDemandNodeClaim.StatusConditions().SetTrue(v1.ConditionTypeConsolidatable)
+			rs := test.ReplicaSet()
+			ExpectApplied(ctx, env.Client, rs)
+			Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(rs), rs)).To(Succeed())
+			pods := test.Pods(2, test.PodOptions{
+				ResourceRequirements: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("3"),
+						corev1.ResourceMemory: resource.MustParse("100Mi"),
+					},
+				},
+				ObjectMeta: metav1.ObjectMeta{Labels: labels,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion:         "apps/v1",
+							Kind:               "ReplicaSet",
+							Name:               rs.Name,
+							UID:                rs.UID,
+							Controller:         lo.ToPtr(true),
+							BlockOwnerDeletion: lo.ToPtr(true),
+						},
+					}},
+			})
+			ExpectApplied(ctx, env.Client, rs, pods[0], pods[1], onDemandNode, onDemandNodeClaim, nodePool)
+			ExpectManualBinding(ctx, env.Client, pods[0], onDemandNode)
+			ExpectManualBinding(ctx, env.Client, pods[1], onDemandNode)
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, nodeStateController, nodeClaimStateController, []*corev1.Node{onDemandNode}, []*v1.NodeClaim{onDemandNodeClaim})
+
+			c := disruption.MakeConsolidation(fakeClock, cluster, env.Client, prov, cloudProvider, recorder, queue)
+			singleNodeConsolidation := disruption.NewSingleNodeConsolidation(c, disruption.WithValidator(NopValidator{}))
+			budgets, err := disruption.BuildDisruptionBudgetMapping(ctx, cluster, fakeClock, env.Client, cloudProvider, recorder, singleNodeConsolidation.Reason())
+			Expect(err).To(Succeed())
+			candidates, err := disruption.GetCandidates(ctx, cluster, env.Client, recorder, fakeClock, cloudProvider, singleNodeConsolidation.ShouldDisrupt, singleNodeConsolidation.Class(), queue)
+			Expect(err).To(Succeed())
+			onDemandCandidate, ok := lo.Find(candidates, func(candidate *disruption.Candidate) bool {
+				return candidate.NodeClaim.Name == onDemandNodeClaim.Name
+			})
+			Expect(ok).To(BeTrue())
+
+			cmds, err := singleNodeConsolidation.ComputeCommands(ctx, budgets, onDemandCandidate)
+			Expect(err).To(Succeed())
+			Expect(cmds).To(HaveLen(1))
+			Expect(cmds[0].Replacements).To(HaveLen(2))
+			for _, replacement := range cmds[0].Replacements {
+				Expect(replacement.Requirements.Get(v1.CapacityTypeLabelKey).Values()).To(ConsistOf(v1.CapacityTypeReserved))
+				Expect(replacement.Requirements.Get(cloudprovider.ReservationIDLabel).Values()).To(ConsistOf(reservationID))
+			}
+
+			validator := disruption.NewSingleConsolidationValidator(c)
+			_, err = validator.Validate(ctx, cmds[0], 0)
+			Expect(err).ToNot(HaveOccurred())
+
+			cmds[0].Replacements[0].Requirements[v1.CapacityTypeLabelKey] = scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, v1.CapacityTypeOnDemand)
+			_, err = validator.Validate(ctx, cmds[0], 0)
+			Expect(err).To(HaveOccurred())
+			Expect(disruption.IsValidationError(err)).To(BeTrue())
+		})
 	})
 	Context("Preferences", func() {
 		It("should consolidate a node through deletion when ignoring preferences", func() {
