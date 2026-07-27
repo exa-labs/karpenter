@@ -204,6 +204,41 @@ var _ = Describe("SingleNodeConsolidation", func() {
 			Expect(consolidation.PreviouslyUnseenNodePools.Has(nodePool2.Name)).To(BeFalse())
 		})
 
+		It("should resume where a timed out run stopped instead of restarting at the cheapest candidate", func() {
+			candidates, err := createCandidates(1.0, 3)
+			Expect(err).To(BeNil())
+			budgetMapping := map[string]int{nodePool1.Name: 30, nodePool2.Name: 30, nodePool3.Name: 30}
+
+			firstPass := consolidation.SortCandidates(ctx, candidates)
+
+			// A run that times out after evaluating the first candidate of every nodepool resumes at their second one.
+			disruption.SingleNodeConsolidationTimeoutDuration = -5 * time.Second
+			consolidation.CandidateOffsets = map[string]int{nodePool1.Name: 1, nodePool2.Name: 1, nodePool3.Name: 1}
+
+			secondPass := consolidation.SortCandidates(ctx, candidates)
+			Expect(secondPass).To(HaveLen(len(firstPass)))
+			for i := range secondPass[:3] {
+				Expect(secondPass[i].Name()).ToNot(Equal(firstPass[i].Name()))
+			}
+			Expect(lo.Map(secondPass[:3], func(c *disruption.Candidate, _ int) string { return c.Name() })).To(
+				ConsistOf(lo.Map(firstPass[3:6], func(c *disruption.Candidate, _ int) string { return c.Name() })))
+
+			// Evaluating every candidate within the timeout starts the next run from the cheapest candidate again.
+			disruption.SingleNodeConsolidationTimeoutDuration = 3 * time.Minute
+			_, _ = consolidation.ComputeCommands(ctx, budgetMapping, candidates...)
+			Expect(consolidation.CandidateOffsets).To(BeEmpty())
+		})
+
+		It("should wrap resume points that are past the end of a nodepool's candidates", func() {
+			candidates, err := createCandidates(1.0, 3)
+			Expect(err).To(BeNil())
+
+			consolidation.CandidateOffsets = map[string]int{nodePool1.Name: 5, "deleted-nodepool": 1}
+			consolidation.SortCandidates(ctx, candidates)
+
+			Expect(consolidation.CandidateOffsets).To(Equal(map[string]int{nodePool1.Name: 2}))
+		})
+
 		It("should mark nodepools as timed out when timeout occurs", func() {
 			disruption.SingleNodeConsolidationTimeoutDuration = -5 * time.Second
 			// Create many candidates to trigger timeout

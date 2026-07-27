@@ -39,7 +39,12 @@ const SingleNodeConsolidationType = "single"
 type SingleNodeConsolidation struct {
 	consolidation
 	PreviouslyUnseenNodePools sets.Set[string]
-	validator                 Validator
+	// CandidateOffsets is, per nodepool, how far into that nodepool's cost-ordered candidates the next evaluation pass
+	// starts. Evaluating a candidate is expensive, so on a large nodepool a pass times out long before reaching the end
+	// of its candidates. Starting every pass at the cheapest candidate would then permanently starve the tail of the
+	// list, which is where the largest, most expensive nodes are.
+	CandidateOffsets map[string]int
+	validator        Validator
 }
 
 func NewSingleNodeConsolidation(c consolidation, opts ...option.Function[MethodOptions]) *SingleNodeConsolidation {
@@ -47,6 +52,7 @@ func NewSingleNodeConsolidation(c consolidation, opts ...option.Function[MethodO
 	return &SingleNodeConsolidation{
 		consolidation:             c,
 		PreviouslyUnseenNodePools: sets.New[string](),
+		CandidateOffsets:          map[string]int{},
 		validator:                 o.validator,
 	}
 }
@@ -64,6 +70,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 	constrainedByBudgets := false
 
 	unseenNodePools := sets.New(lo.Map(candidates, func(c *Candidate, _ int) string { return c.NodePool.Name })...)
+	evaluatedPerNodePool := map[string]int{}
 
 	for i, candidate := range candidates {
 		if s.clock.Now().After(timeout) {
@@ -71,11 +78,15 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 			log.FromContext(ctx).V(1).Info("abandoning single-node consolidation due to timeout", "candidates_evaluated", i)
 
 			s.PreviouslyUnseenNodePools = unseenNodePools
+			for nodePoolName, evaluated := range evaluatedPerNodePool {
+				s.CandidateOffsets[nodePoolName] += evaluated
+			}
 
 			return []Command{}, nil
 		}
 		// Track that we've seen this nodepool
 		unseenNodePools.Delete(candidate.NodePool.Name)
+		evaluatedPerNodePool[candidate.NodePool.Name]++
 
 		// If the disruption budget doesn't allow this candidate to be disrupted,
 		// continue to the next candidate. We don't need to decrement any budget
@@ -119,6 +130,8 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 	}
 
 	s.PreviouslyUnseenNodePools = unseenNodePools
+	// Every candidate was evaluated within the timeout, so the next pass can start from the cheapest candidate again.
+	s.CandidateOffsets = map[string]int{}
 
 	return []Command{}, nil
 }
@@ -163,14 +176,29 @@ func (s *SingleNodeConsolidation) shuffleCandidates(ctx context.Context, nodePoo
 		return len(a) > len(b)
 	})
 
-	// Interweave candidates from different nodepools
+	s.normalizeCandidateOffsets(nodePoolCandidates)
+
+	// Interweave candidates from different nodepools, resuming each nodepool where the last timed out pass stopped
 	for i := range maxCandidatesPerNodePool {
 		for _, nodePoolName := range sortedNodePools {
-			if i < len(nodePoolCandidates[nodePoolName]) {
-				result = append(result, nodePoolCandidates[nodePoolName][i])
+			if candidates := nodePoolCandidates[nodePoolName]; i < len(candidates) {
+				result = append(result, candidates[(i+s.CandidateOffsets[nodePoolName])%len(candidates)])
 			}
 		}
 	}
 
 	return result
+}
+
+// normalizeCandidateOffsets clamps each resume point to the nodepool's current number of candidates and drops the ones
+// for nodepools that no longer have any. Candidates are tracked by position rather than identity, so a resume point is
+// approximate whenever a nodepool's candidate set changes between passes.
+func (s *SingleNodeConsolidation) normalizeCandidateOffsets(nodePoolCandidates map[string][]*Candidate) {
+	for nodePoolName, offset := range s.CandidateOffsets {
+		if numCandidates := len(nodePoolCandidates[nodePoolName]); numCandidates != 0 {
+			s.CandidateOffsets[nodePoolName] = offset % numCandidates
+		} else {
+			delete(s.CandidateOffsets, nodePoolName)
+		}
+	}
 }
