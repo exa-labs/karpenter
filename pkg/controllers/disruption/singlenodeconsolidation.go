@@ -114,7 +114,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 		}
 		// Score the move: Balanced pools may reject; other policies pass through.
 		if approved, _ := s.evaluator.ApproveCommand(ctx, cmd); !approved {
-			ObserveConsolidationCandidateSkip(s.ConsolidationType(), candidate.NodePool.Name, "approval_rejected")
+			ObserveConsolidationCandidateSkip(s.ConsolidationType(), candidate.NodePool.Name, CandidateSkipApprovalRejected)
 			continue
 		}
 		if _, err = s.validator.Validate(ctx, cmd, commandValidationDelay); err != nil {

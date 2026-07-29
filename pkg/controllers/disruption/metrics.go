@@ -53,6 +53,7 @@ const (
 	CandidateSkipComputeError         = "compute_error"
 	CandidateSkipPodsDidNotSchedule   = "pods_did_not_schedule"
 	CandidateSkipMultipleReplacements = "multiple_replacements_required"
+	CandidateSkipApprovalRejected     = "approval_rejected"
 )
 
 var (
