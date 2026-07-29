@@ -72,7 +72,7 @@ var _ = Describe("CanEvictPods", func() {
 		}
 		podDisruptionBudget := test.PodDisruptionBudget(test.PDBOptions{
 			Labels:                     podLabels,
-			MinAvailable:               lo.ToPtr(intstr.FromString("100%")),
+			MinAvailable:               new(intstr.FromString("100%")),
 			UnhealthyPodEvictionPolicy: lo.ToPtr(policyv1.AlwaysAllow),
 		})
 		pod := test.Pod(test.PodOptions{
@@ -85,14 +85,14 @@ var _ = Describe("CanEvictPods", func() {
 		limits, err := pdb.NewLimits(ctx, env.Client)
 		Expect(err).NotTo(HaveOccurred())
 
-		violatingPDBs, canEvict := limits.CanEvictPods([]*v1.Pod{pod})
+		violatingPDBs, canEvict := limits.CanEvictPods([]*v1.Pod{pod}, env.Clock, nil)
 		Expect(violatingPDBs).To(HaveLen(0))
 		Expect(canEvict).To(BeTrue())
 	})
 	It("can't evict unhealthy pods when UnhealthyPodEvictionPolicy is not set", func() {
 		podDisruptionBudget := test.PodDisruptionBudget(test.PDBOptions{
 			Labels:       podLabels,
-			MinAvailable: lo.ToPtr(intstr.FromString("100%")),
+			MinAvailable: new(intstr.FromString("100%")),
 		})
 		pod := test.Pod(test.PodOptions{
 			ObjectMeta: metav1.ObjectMeta{
@@ -104,7 +104,7 @@ var _ = Describe("CanEvictPods", func() {
 		limits, err := pdb.NewLimits(ctx, env.Client)
 		Expect(err).NotTo(HaveOccurred())
 
-		violatingPDBs, canEvict := limits.CanEvictPods([]*v1.Pod{pod})
+		violatingPDBs, canEvict := limits.CanEvictPods([]*v1.Pod{pod}, env.Clock, nil)
 		Expect(violatingPDBs).To(HaveLen(1))
 		Expect(violatingPDBs).To(ContainElement(client.ObjectKeyFromObject(podDisruptionBudget)))
 		Expect(canEvict).To(BeFalse())
@@ -122,7 +122,7 @@ var _ = Describe("CanEvictPods", func() {
 		limits, err := pdb.NewLimits(ctx, env.Client)
 		Expect(err).NotTo(HaveOccurred())
 
-		violatingPDBs, canEvict := limits.CanEvictPods([]*v1.Pod{pod})
+		violatingPDBs, canEvict := limits.CanEvictPods([]*v1.Pod{pod}, env.Clock, nil)
 		Expect(violatingPDBs).To(HaveLen(0))
 		Expect(canEvict).To(BeTrue())
 	})
@@ -144,7 +144,7 @@ var _ = Describe("CanEvictPods", func() {
 			limits, err := pdb.NewLimits(ctx, env.Client)
 			Expect(err).NotTo(HaveOccurred())
 
-			violatingPDBs, canEvict := limits.CanEvictPods([]*v1.Pod{pod1, pod2})
+			violatingPDBs, canEvict := limits.CanEvictPods([]*v1.Pod{pod1, pod2}, env.Clock, nil)
 			Expect(violatingPDBs).To(HaveLen(len(podDisruptionBudgets)))
 			lo.ForEach(podDisruptionBudgets, func(pdb *policyv1.PodDisruptionBudget, _ int) {
 				Expect(violatingPDBs).To(ContainElement(client.ObjectKeyFromObject(pdb)))
@@ -153,26 +153,26 @@ var _ = Describe("CanEvictPods", func() {
 		},
 		Entry("100% min available", test.PodDisruptionBudget(test.PDBOptions{
 			Labels:       podLabels,
-			MinAvailable: lo.ToPtr(intstr.FromString("100%")),
+			MinAvailable: new(intstr.FromString("100%")),
 		})),
 		Entry("0% max unavailable", test.PodDisruptionBudget(test.PDBOptions{
 			Labels:         podLabels,
-			MaxUnavailable: lo.ToPtr(intstr.FromString("0%")),
+			MaxUnavailable: new(intstr.FromString("0%")),
 		})),
 		Entry("0 max unavailable", test.PodDisruptionBudget(test.PDBOptions{
 			Labels:         podLabels,
-			MaxUnavailable: lo.ToPtr(intstr.FromInt(0)),
+			MaxUnavailable: new(intstr.FromInt(0)),
 		})),
 		Entry("multiple PDBs on the same pod",
 			test.PodDisruptionBudget(test.PDBOptions{
 				ObjectMeta:   metav1.ObjectMeta{Name: "pdb-1"},
 				Labels:       podLabels,
-				MinAvailable: lo.ToPtr(intstr.FromString("100%")),
+				MinAvailable: new(intstr.FromString("100%")),
 			}),
 			test.PodDisruptionBudget(test.PDBOptions{
 				ObjectMeta:   metav1.ObjectMeta{Name: "pdb-2"},
 				Labels:       podLabels,
-				MinAvailable: lo.ToPtr(intstr.FromString("100%")),
+				MinAvailable: new(intstr.FromString("100%")),
 			}),
 		),
 	)
@@ -190,7 +190,7 @@ var _ = Describe("CanEvictPods", func() {
 			limits, err := pdb.NewLimits(ctx, env.Client)
 			Expect(err).NotTo(HaveOccurred())
 
-			violatingPDBs, canEvict := limits.CanEvictPods([]*v1.Pod{pod1, pod2})
+			violatingPDBs, canEvict := limits.CanEvictPods([]*v1.Pod{pod1, pod2}, env.Clock, nil)
 			Expect(violatingPDBs).To(HaveLen(len(podDisruptionBudgets)))
 			lo.ForEach(podDisruptionBudgets, func(pdb *policyv1.PodDisruptionBudget, _ int) {
 				Expect(violatingPDBs).To(ContainElement(client.ObjectKeyFromObject(pdb)))
@@ -199,26 +199,26 @@ var _ = Describe("CanEvictPods", func() {
 		},
 		Entry("100% min available", test.PodDisruptionBudget(test.PDBOptions{
 			Labels:       podLabels,
-			MinAvailable: lo.ToPtr(intstr.FromString("100%")),
+			MinAvailable: new(intstr.FromString("100%")),
 		})),
 		Entry("0% max unavailable", test.PodDisruptionBudget(test.PDBOptions{
 			Labels:         podLabels,
-			MaxUnavailable: lo.ToPtr(intstr.FromString("0%")),
+			MaxUnavailable: new(intstr.FromString("0%")),
 		})),
 		Entry("0 max unavailable", test.PodDisruptionBudget(test.PDBOptions{
 			Labels:         podLabels,
-			MaxUnavailable: lo.ToPtr(intstr.FromInt(0)),
+			MaxUnavailable: new(intstr.FromInt(0)),
 		})),
 		Entry("multiple PDBs on the same pod",
 			test.PodDisruptionBudget(test.PDBOptions{
 				ObjectMeta:   metav1.ObjectMeta{Name: "pdb-1"},
 				Labels:       podLabels,
-				MinAvailable: lo.ToPtr(intstr.FromString("100%")),
+				MinAvailable: new(intstr.FromString("100%")),
 			}),
 			test.PodDisruptionBudget(test.PDBOptions{
 				ObjectMeta:   metav1.ObjectMeta{Name: "pdb-2"},
 				Labels:       podLabels,
-				MinAvailable: lo.ToPtr(intstr.FromString("100%")),
+				MinAvailable: new(intstr.FromString("100%")),
 			}),
 		),
 	)
@@ -231,7 +231,7 @@ var _ = Describe("IsCurrentlyReschedulable", func() {
 		}
 		podDisruptionBudget := test.PodDisruptionBudget(test.PDBOptions{
 			Labels:                     podLabels,
-			MinAvailable:               lo.ToPtr(intstr.FromString("100%")),
+			MinAvailable:               new(intstr.FromString("100%")),
 			UnhealthyPodEvictionPolicy: lo.ToPtr(policyv1.AlwaysAllow),
 		})
 		pod := test.Pod(test.PodOptions{
@@ -244,12 +244,12 @@ var _ = Describe("IsCurrentlyReschedulable", func() {
 		limits, err := pdb.NewLimits(ctx, env.Client)
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(limits.IsCurrentlyReschedulable(pod)).To(BeTrue())
+		Expect(limits.IsCurrentlyReschedulable(pod, env.Clock, nil)).To(BeTrue())
 	})
 	It("does not consider unhealthy pod as currently reschedulable when UnhealthyPodEvictionPolicy is not set", func() {
 		podDisruptionBudget := test.PodDisruptionBudget(test.PDBOptions{
 			Labels:       podLabels,
-			MinAvailable: lo.ToPtr(intstr.FromString("100%")),
+			MinAvailable: new(intstr.FromString("100%")),
 		})
 		pod := test.Pod(test.PodOptions{
 			ObjectMeta: metav1.ObjectMeta{
@@ -261,7 +261,7 @@ var _ = Describe("IsCurrentlyReschedulable", func() {
 		limits, err := pdb.NewLimits(ctx, env.Client)
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(limits.IsCurrentlyReschedulable(pod)).To(BeFalse())
+		Expect(limits.IsCurrentlyReschedulable(pod, env.Clock, nil)).To(BeFalse())
 	})
 	It("considers pod as currently reschedulable when no PDBs match", func() {
 		podDisruptionBudget := test.PodDisruptionBudget(test.PDBOptions{
@@ -276,7 +276,7 @@ var _ = Describe("IsCurrentlyReschedulable", func() {
 		limits, err := pdb.NewLimits(ctx, env.Client)
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(limits.IsCurrentlyReschedulable(pod)).To(BeTrue())
+		Expect(limits.IsCurrentlyReschedulable(pod, env.Clock, nil)).To(BeTrue())
 	})
 	DescribeTable("pods which are not currently reschedulable due to PDBs",
 		func(podDisruptionBudgets ...*policyv1.PodDisruptionBudget) {
@@ -291,30 +291,30 @@ var _ = Describe("IsCurrentlyReschedulable", func() {
 			limits, err := pdb.NewLimits(ctx, env.Client)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(limits.IsCurrentlyReschedulable(pod)).To(BeFalse())
+			Expect(limits.IsCurrentlyReschedulable(pod, env.Clock, nil)).To(BeFalse())
 		},
 		Entry("100% min available", test.PodDisruptionBudget(test.PDBOptions{
 			Labels:       podLabels,
-			MinAvailable: lo.ToPtr(intstr.FromString("100%")),
+			MinAvailable: new(intstr.FromString("100%")),
 		})),
 		Entry("0% max unavailable", test.PodDisruptionBudget(test.PDBOptions{
 			Labels:         podLabels,
-			MaxUnavailable: lo.ToPtr(intstr.FromString("0%")),
+			MaxUnavailable: new(intstr.FromString("0%")),
 		})),
 		Entry("0 max unavailable", test.PodDisruptionBudget(test.PDBOptions{
 			Labels:         podLabels,
-			MaxUnavailable: lo.ToPtr(intstr.FromInt(0)),
+			MaxUnavailable: new(intstr.FromInt(0)),
 		})),
 		Entry("multiple PDBs on the same pod",
 			test.PodDisruptionBudget(test.PDBOptions{
 				ObjectMeta:   metav1.ObjectMeta{Name: "pdb-1"},
 				Labels:       podLabels,
-				MinAvailable: lo.ToPtr(intstr.FromString("100%")),
+				MinAvailable: new(intstr.FromString("100%")),
 			}),
 			test.PodDisruptionBudget(test.PDBOptions{
 				ObjectMeta:   metav1.ObjectMeta{Name: "pdb-2"},
 				Labels:       podLabels,
-				MinAvailable: lo.ToPtr(intstr.FromString("100%")),
+				MinAvailable: new(intstr.FromString("100%")),
 			}),
 		),
 	)
@@ -330,6 +330,6 @@ var _ = Describe("IsCurrentlyReschedulable", func() {
 		limits, err := pdb.NewLimits(ctx, env.Client)
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(limits.IsCurrentlyReschedulable(pod)).To(BeFalse())
+		Expect(limits.IsCurrentlyReschedulable(pod, env.Clock, nil)).To(BeFalse())
 	})
 })

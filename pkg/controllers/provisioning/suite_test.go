@@ -36,13 +36,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/record"
-	clock "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"sigs.k8s.io/karpenter/pkg/apis"
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider/fake"
+	"sigs.k8s.io/karpenter/pkg/controllers/dynamicresources/deviceallocation"
 	"sigs.k8s.io/karpenter/pkg/controllers/provisioning"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	"sigs.k8s.io/karpenter/pkg/controllers/state/informer"
@@ -52,12 +52,13 @@ import (
 	"sigs.k8s.io/karpenter/pkg/test"
 	. "sigs.k8s.io/karpenter/pkg/test/expectations"
 	"sigs.k8s.io/karpenter/pkg/test/v1alpha1"
+	"sigs.k8s.io/karpenter/pkg/utils/resources"
+
 	. "sigs.k8s.io/karpenter/pkg/utils/testing"
 )
 
 var (
 	ctx                 context.Context
-	fakeClock           *clock.FakeClock
 	cluster             *state.Cluster
 	nodeController      *informer.NodeController
 	daemonsetController *informer.DaemonSetController
@@ -77,10 +78,9 @@ var _ = BeforeSuite(func() {
 	env = test.NewEnvironment(test.WithCRDs(apis.CRDs...), test.WithCRDs(v1alpha1.CRDs...))
 	ctx = options.ToContext(ctx, test.Options())
 	cloudProvider = fake.NewCloudProvider()
-	fakeClock = clock.NewFakeClock(time.Now())
-	cluster = state.NewCluster(fakeClock, env.Client, cloudProvider)
+	cluster = state.NewCluster(env.Clock, env.Client, cloudProvider)
 	nodeController = informer.NewNodeController(env.Client, cluster)
-	prov = provisioning.NewProvisioner(env.Client, events.NewRecorder(&record.FakeRecorder{}), cloudProvider, cluster, fakeClock)
+	prov = provisioning.NewProvisioner(env.Client, events.NewRecorder(&record.FakeRecorder{}), cloudProvider, cluster, env.Clock, deviceallocation.NewController(env.Client))
 	daemonsetController = informer.NewDaemonSetController(env.Client, cluster)
 	instanceTypes, _ := cloudProvider.GetInstanceTypes(ctx, nil)
 	instanceTypeMap = map[string]*cloudprovider.InstanceType{}
@@ -94,10 +94,10 @@ var _ = BeforeEach(func() {
 	cloudProvider.Reset()
 
 	// ensure any waiters on our clock are allowed to proceed before resetting our clock time
-	for fakeClock.HasWaiters() {
-		fakeClock.Step(1 * time.Minute)
+	for env.Clock.HasWaiters() {
+		env.Clock.Step(1 * time.Minute)
 	}
-	fakeClock.SetTime(time.Now())
+	env.Clock.SetTime(time.Now())
 	state.PodSchedulingDecisionSeconds.Reset()
 	pscheduling.DefaultTerminationGracePeriod = nil
 })
@@ -125,7 +125,7 @@ var _ = Describe("Provisioning", func() {
 
 			// Step the clock forward to exceed the batch idle duration
 			// This should cause the batcher to complete and allow provisioning
-			fakeClock.Step(11 * time.Second)
+			env.Clock.Step(11 * time.Second)
 
 			// Use the standard provisioning expectation which handles the reconciliation
 			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
@@ -143,32 +143,32 @@ var _ = Describe("Provisioning", func() {
 
 			wg := sync.WaitGroup{}
 			wg.Add(1)
-			Expect(fakeClock.HasWaiters()).To(BeFalse())
+			Expect(env.Clock.HasWaiters()).To(BeFalse())
 			go func() {
 				defer GinkgoRecover()
 				defer wg.Done()
 
 				// Have a waiter on the first trigger and trigger the batcher
-				Eventually(func() bool { return fakeClock.HasWaiters() }, time.Second).Should(BeTrue())
+				Eventually(func() bool { return env.Clock.HasWaiters() }, time.Second).Should(BeTrue())
 				prov.Trigger(pod.UID)
 
 				time.Sleep(time.Second) // give the process time to make it to the next batching section
 
 				// Fall-through to the second batching section
-				Eventually(func() bool { return fakeClock.HasWaiters() }, time.Second).Should(BeTrue())
+				Eventually(func() bool { return env.Clock.HasWaiters() }, time.Second).Should(BeTrue())
 
 				// Step the clock by 3 seconds which is within the batch idle duration of 5s and then add the same pod again.
-				fakeClock.Step(3 * time.Second)
-				// We expect to have waiters on the fakeClock since this is still within the batch idle duration of 5s.
-				Eventually(func() bool { return fakeClock.HasWaiters() }, time.Second).Should(BeTrue())
+				env.Clock.Step(3 * time.Second)
+				// We expect to have waiters on the env.Clock since this is still within the batch idle duration of 5s.
+				Eventually(func() bool { return env.Clock.HasWaiters() }, time.Second).Should(BeTrue())
 				prov.Trigger(pod.UID)
 
 				time.Sleep(time.Second) // give the process time to iterate on the batching section
 
 				// Step the clock again by 3s to just cross the batch idle duration. We should be able to get out of the
 				// provisioning loop because the same pod will not cause the idle duration to reset.
-				fakeClock.Step(3 * time.Second)
-				Eventually(func() bool { return fakeClock.HasWaiters() }, time.Second).Should(BeFalse())
+				env.Clock.Step(3 * time.Second)
+				Eventually(func() bool { return env.Clock.HasWaiters() }, time.Second).Should(BeFalse())
 			}()
 			ExpectSingletonReconciled(ctx, prov)
 			wg.Wait()
@@ -186,36 +186,36 @@ var _ = Describe("Provisioning", func() {
 
 			wg := sync.WaitGroup{}
 			wg.Add(1)
-			Expect(fakeClock.HasWaiters()).To(BeFalse())
+			Expect(env.Clock.HasWaiters()).To(BeFalse())
 			go func() {
 				defer GinkgoRecover()
 				defer wg.Done()
 
 				// Have a waiter on the first trigger and trigger the batcher
-				Eventually(func() bool { return fakeClock.HasWaiters() }, time.Second).Should(BeTrue())
+				Eventually(func() bool { return env.Clock.HasWaiters() }, time.Second).Should(BeTrue())
 				prov.Trigger(pod.UID)
 
 				time.Sleep(time.Second) // give the process time to make it to the next batching section
 
 				// Fall-through to the second batching section
-				Eventually(func() bool { return fakeClock.HasWaiters() }, time.Second).Should(BeTrue())
+				Eventually(func() bool { return env.Clock.HasWaiters() }, time.Second).Should(BeTrue())
 
 				// Step the clock by 3 seconds which is within the batch idle duration of 5s and then add a new pod
-				fakeClock.Step(3 * time.Second)
-				// We expect to have waiters on the fakeClock since this is still within the batch idle duration of 5s.
-				Eventually(func() bool { return fakeClock.HasWaiters() }, time.Second).Should(BeTrue())
+				env.Clock.Step(3 * time.Second)
+				// We expect to have waiters on the env.Clock since this is still within the batch idle duration of 5s.
+				Eventually(func() bool { return env.Clock.HasWaiters() }, time.Second).Should(BeTrue())
 				prov.Trigger(pod2.UID)
 
 				time.Sleep(time.Second) // give the process time to iterate on the batching section
 
 				// Step the clock by 3s as we expect provisioning to not happen until another 5s because the
 				// batch idle duration was reset due to a new pod being added.
-				fakeClock.Step(3 * time.Second)
-				Consistently(func() bool { return fakeClock.HasWaiters() }, time.Second).Should(BeTrue())
+				env.Clock.Step(3 * time.Second)
+				Consistently(func() bool { return env.Clock.HasWaiters() }, time.Second).Should(BeTrue())
 				// Stepping the clock again by 3s. We should be able to get out of the
 				// provisioning loop at this point (since we have exceeded the idle duration)
-				fakeClock.Step(3 * time.Second)
-				Eventually(func() bool { return fakeClock.HasWaiters() }, time.Second).Should(BeFalse())
+				env.Clock.Step(3 * time.Second)
+				Eventually(func() bool { return env.Clock.HasWaiters() }, time.Second).Should(BeFalse())
 			}()
 			ExpectSingletonReconciled(ctx, prov)
 			wg.Wait()
@@ -506,7 +506,7 @@ var _ = Describe("Provisioning", func() {
 		ExpectReconcileSucceeded(ctx, nodeController, client.ObjectKeyFromObject(node))
 
 		// Schedule 3 pods to the node that currently exists
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			pod := test.UnschedulablePod()
 			ExpectApplied(ctx, env.Client, pod)
 			ExpectManualBinding(ctx, env.Client, pod, node)
@@ -524,7 +524,7 @@ var _ = Describe("Provisioning", func() {
 		Expect(len(nodes.Items)).To(Equal(2))
 
 		// Scheduler should attempt to schedule all the pods to the new node
-		for _, n := range bindings {
+		for _, n := range bindings.Bindings {
 			Expect(n.Node.Name).ToNot(Equal(node.Name))
 		}
 	})
@@ -887,6 +887,48 @@ var _ = Describe("Provisioning", func() {
 			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
 			ExpectNotScheduled(ctx, env.Client, pod)
 		})
+		It("should not schedule if limits would be exceeded (node)", func() {
+			ExpectApplied(ctx, env.Client, test.NodePool(v1.NodePool{
+				Spec: v1.NodePoolSpec{
+					Limits: v1.Limits(corev1.ResourceList{resources.Node: resource.MustParse("2")}),
+				},
+			}))
+			// prevent these pods from scheduling on the same node
+			opts := test.PodOptions{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": "foo"},
+				},
+				PodAntiRequirements: []corev1.PodAffinityTerm{
+					{
+						TopologyKey: corev1.LabelHostname,
+						LabelSelector: &metav1.LabelSelector{
+							MatchLabels: map[string]string{
+								"app": "foo",
+							},
+						},
+					},
+				},
+				ResourceRequirements: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU: resource.MustParse("1.5"),
+					},
+				},
+			}
+			pod := test.UnschedulablePod(opts)
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
+			// A node can be launched
+			ExpectScheduled(ctx, env.Client, pod)
+
+			pod = test.UnschedulablePod(opts)
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
+			// A second node can be launched
+			ExpectScheduled(ctx, env.Client, pod)
+
+			// This pod should not be scheduled since it would require a third provisioned node, but the limit would be exceeded
+			pod = test.UnschedulablePod(opts)
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
+			ExpectNotScheduled(ctx, env.Client, pod)
+		})
 	})
 	Context("Daemonsets", func() {
 		It("should account for daemonsets", func() {
@@ -987,8 +1029,8 @@ var _ = Describe("Provisioning", func() {
 								Kind:               "DaemonSet",
 								Name:               daemonset.Name,
 								UID:                daemonset.UID,
-								Controller:         lo.ToPtr(true),
-								BlockOwnerDeletion: lo.ToPtr(true),
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						},
 					},
@@ -1151,6 +1193,85 @@ var _ = Describe("Provisioning", func() {
 			Expect(*allocatable.Cpu()).To(Equal(resource.MustParse("2")))
 			Expect(*allocatable.Memory()).To(Equal(resource.MustParse("2Gi")))
 		})
+		It("should ignore daemonsets when no instance types meet the daemonset requirements", func() {
+			ExpectApplied(ctx, env.Client, test.NodePool(), test.DaemonSet(
+				test.DaemonSetOptions{PodOptions: test.PodOptions{
+					NodeRequirements:     []corev1.NodeSelectorRequirement{{Key: corev1.LabelInstanceTypeStable, Operator: corev1.NodeSelectorOpIn, Values: []string{"non-existent-instance-type"}}},
+					ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("2Gi")}},
+				}},
+			))
+			pod := test.UnschedulablePod(
+				test.PodOptions{
+					ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Gi")}},
+				},
+			)
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
+			node := ExpectScheduled(ctx, env.Client, pod)
+
+			// We have multiple instance types that we can launch, one with 2Gi and one with 4Gi
+			// If we launch with 2Gi, this means the Daemon pod was not respected
+			// If we launch with 4Gi, this means the Daemon pod was respected
+			allocatable := instanceTypeMap[node.Labels[corev1.LabelInstanceTypeStable]].Capacity
+			Expect(*allocatable.Cpu()).To(Equal(resource.MustParse("2")))
+			Expect(*allocatable.Memory()).To(Equal(resource.MustParse("2Gi")))
+		})
+		It("should account for daemonsets with a custom label nodeSelector that matches the nodepool", func() {
+			ExpectApplied(ctx, env.Client,
+				test.NodePool(v1.NodePool{
+					Spec: v1.NodePoolSpec{
+						Template: v1.NodeClaimTemplate{
+							ObjectMeta: v1.ObjectMeta{Labels: map[string]string{"purpose": "monitoring"}},
+						},
+					},
+				}),
+				test.DaemonSet(
+					test.DaemonSetOptions{PodOptions: test.PodOptions{
+						NodeSelector:         map[string]string{"purpose": "monitoring"},
+						ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("2Gi")}},
+					}},
+				))
+			pod := test.UnschedulablePod(
+				test.PodOptions{
+					ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Gi")}},
+				},
+			)
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
+			node := ExpectScheduled(ctx, env.Client, pod)
+
+			allocatable := instanceTypeMap[node.Labels[corev1.LabelInstanceTypeStable]].Capacity
+			Expect(*allocatable.Cpu()).To(Equal(resource.MustParse("4")))
+			Expect(*allocatable.Memory()).To(Equal(resource.MustParse("4Gi")))
+		})
+		It("should filter out daemonsets based on instance type requirements", func() {
+			ExpectApplied(ctx, env.Client, test.NodePool(),
+				test.DaemonSet(
+					test.DaemonSetOptions{PodOptions: test.PodOptions{
+						NodeRequirements:     []corev1.NodeSelectorRequirement{{Key: fake.LabelInstanceSize, Operator: corev1.NodeSelectorOpIn, Values: []string{"small"}}},
+						ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")}},
+					}},
+				),
+				test.DaemonSet(
+					test.DaemonSetOptions{PodOptions: test.PodOptions{
+						NodeRequirements:     []corev1.NodeSelectorRequirement{{Key: fake.LabelInstanceSize, Operator: corev1.NodeSelectorOpIn, Values: []string{"large"}}},
+						ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10")}},
+					}},
+				),
+			)
+			pod := test.UnschedulablePod(
+				test.PodOptions{
+					ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Gi")}},
+				},
+			)
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
+			node := ExpectScheduled(ctx, env.Client, pod)
+
+			// We have multiple instance types that we can launch, one with 2Gi and one with 4Gi
+			// If we launch with 2Gi, this means the Daemon pod was not respected
+			// If we launch with 4Gi, this means the Daemon pod was respected
+			allocatable := instanceTypeMap[node.Labels[corev1.LabelInstanceTypeStable]].Capacity
+			Expect(*allocatable.Cpu()).To(Equal(resource.MustParse("4")))
+			Expect(*allocatable.Memory()).To(Equal(resource.MustParse("4Gi")))
+		})
 		It("should account daemonsets with NotIn operator and unspecified key", func() {
 			ExpectApplied(ctx, env.Client, test.NodePool(), test.DaemonSet(
 				test.DaemonSetOptions{PodOptions: test.PodOptions{
@@ -1210,8 +1331,8 @@ var _ = Describe("Provisioning", func() {
 								Kind:               "DaemonSet",
 								Name:               daemonset.Name,
 								UID:                daemonset.UID,
-								Controller:         lo.ToPtr(true),
-								BlockOwnerDeletion: lo.ToPtr(true),
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
 							},
 						},
 					},
@@ -1368,6 +1489,36 @@ var _ = Describe("Provisioning", func() {
 			// If we launch with 2Gi, this means the Daemon pod was not respected
 			// If we launch with 4Gi, this means the Daemon pod was respected
 			allocatable := instanceTypeMap[node.Labels[corev1.LabelInstanceTypeStable]].Capacity
+			Expect(*allocatable.Cpu()).To(Equal(resource.MustParse("4")))
+			Expect(*allocatable.Memory()).To(Equal(resource.MustParse("4Gi")))
+		})
+		It("should not account for daemonset hostports when daemonset would not schedule on selected node", func() {
+			ExpectApplied(ctx, env.Client, test.NodePool(), test.DaemonSet(
+				test.DaemonSetOptions{PodOptions: test.PodOptions{
+					ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("4"), corev1.ResourceMemory: resource.MustParse("4Gi")}},
+					NodeRequirements:     []corev1.NodeSelectorRequirement{{Key: fake.LabelInstanceSize, Operator: corev1.NodeSelectorOpIn, Values: []string{"large"}}},
+					HostPorts:            []int32{8080},
+				}},
+			))
+			ExpectApplied(ctx, env.Client, test.NodePool(), test.DaemonSet(
+				test.DaemonSetOptions{PodOptions: test.PodOptions{
+					ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("2Gi")}},
+					NodeRequirements:     []corev1.NodeSelectorRequirement{{Key: fake.LabelInstanceSize, Operator: corev1.NodeSelectorOpIn, Values: []string{"small"}}},
+					HostPorts:            []int32{8081},
+				}},
+			))
+			pod := test.UnschedulablePod(
+				test.PodOptions{
+					ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Gi")}},
+					NodeRequirements:     []corev1.NodeSelectorRequirement{{Key: fake.LabelInstanceSize, Operator: corev1.NodeSelectorOpIn, Values: []string{"small"}}},
+					HostPorts:            []int32{8080},
+				},
+			)
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod)
+			node := ExpectScheduled(ctx, env.Client, pod)
+
+			allocatable := instanceTypeMap[node.Labels[corev1.LabelInstanceTypeStable]].Capacity
+			Expect(node.Labels[fake.LabelInstanceSize]).To(Equal("small"))
 			Expect(*allocatable.Cpu()).To(Equal(resource.MustParse("4")))
 			Expect(*allocatable.Memory()).To(Equal(resource.MustParse("4Gi")))
 		})
@@ -1725,7 +1876,7 @@ var _ = Describe("Provisioning", func() {
 					Kind:               "NodePool",
 					Name:               nodePool.Name,
 					UID:                nodePool.UID,
-					BlockOwnerDeletion: lo.ToPtr(true),
+					BlockOwnerDeletion: new(true),
 				},
 			))
 			ExpectScheduled(ctx, env.Client, pod)
@@ -1803,6 +1954,33 @@ var _ = Describe("Provisioning", func() {
 				corev1.ResourcePods:   resource.MustParse("2"),
 			})
 			ExpectScheduled(ctx, env.Client, pod)
+		})
+		It("should not double-count daemon overhead when multiple pods are scheduled to the same nodeclaim", func() {
+			ExpectApplied(ctx, env.Client, test.NodePool(), test.DaemonSet(
+				test.DaemonSetOptions{PodOptions: test.PodOptions{
+					ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Mi")}},
+				}},
+			))
+			pod1 := test.UnschedulablePod(
+				test.PodOptions{
+					ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Mi")}},
+				},
+			)
+			pod2 := test.UnschedulablePod(
+				test.PodOptions{
+					ResourceRequirements: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Mi")}},
+				},
+			)
+			ExpectProvisioned(ctx, env.Client, cluster, cloudProvider, prov, pod1, pod2)
+			Expect(cloudProvider.CreateCalls).To(HaveLen(1))
+			// Total should be: 2 pods (1 cpu each) + 1 daemon (1 cpu) = 3 cpu, not 4 cpu
+			ExpectNodeClaimRequests(cloudProvider.CreateCalls[0], corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("3"),
+				corev1.ResourceMemory: resource.MustParse("3Mi"),
+				corev1.ResourcePods:   resource.MustParse("3"),
+			})
+			ExpectScheduled(ctx, env.Client, pod1)
+			ExpectScheduled(ctx, env.Client, pod2)
 		})
 	})
 	Context("Volume Topology Requirements", func() {
@@ -2028,7 +2206,7 @@ var _ = Describe("Provisioning", func() {
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "local-path",
 					},
-					Provisioner: lo.ToPtr("kubernetes.io/no-provisioner"),
+					Provisioner: new("kubernetes.io/no-provisioner"),
 				})
 				// Create a PersistentVolume that is using a random node name for its affinity
 				persistentVolume := test.PersistentVolume(volumeOptions)
@@ -2069,7 +2247,7 @@ var _ = Describe("Provisioning", func() {
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "local-path",
 					},
-					Provisioner: lo.ToPtr("kubernetes.io/no-provisioner"),
+					Provisioner: new("kubernetes.io/no-provisioner"),
 				})
 				pod := test.UnschedulablePod(test.PodOptions{
 					EphemeralVolumeTemplates: []test.EphemeralVolumeTemplateOptions{
@@ -2636,8 +2814,8 @@ var _ = Describe("Provisioning", func() {
 			It("should schedule to the nodepool with the highest priority always", func() {
 				nodePools := []client.Object{
 					test.NodePool(),
-					test.NodePool(v1.NodePool{Spec: v1.NodePoolSpec{Weight: lo.ToPtr(int32(20))}}),
-					test.NodePool(v1.NodePool{Spec: v1.NodePoolSpec{Weight: lo.ToPtr(int32(100))}}),
+					test.NodePool(v1.NodePool{Spec: v1.NodePoolSpec{Weight: new(int32(20))}}),
+					test.NodePool(v1.NodePool{Spec: v1.NodePoolSpec{Weight: new(int32(100))}}),
 				}
 				ExpectApplied(ctx, env.Client, nodePools...)
 				pods := []*corev1.Pod{
@@ -2653,8 +2831,8 @@ var _ = Describe("Provisioning", func() {
 				targetedNodePool := test.NodePool()
 				nodePools := []client.Object{
 					targetedNodePool,
-					test.NodePool(v1.NodePool{Spec: v1.NodePoolSpec{Weight: lo.ToPtr(int32(20))}}),
-					test.NodePool(v1.NodePool{Spec: v1.NodePoolSpec{Weight: lo.ToPtr(int32(100))}}),
+					test.NodePool(v1.NodePool{Spec: v1.NodePoolSpec{Weight: new(int32(20))}}),
+					test.NodePool(v1.NodePool{Spec: v1.NodePoolSpec{Weight: new(int32(100))}}),
 				}
 				ExpectApplied(ctx, env.Client, nodePools...)
 				pod := test.UnschedulablePod(test.PodOptions{NodeSelector: map[string]string{v1.NodePoolLabelKey: targetedNodePool.Name}})
@@ -2669,7 +2847,7 @@ var _ = Describe("Provisioning", func() {
 		It("should not create NodeClaims for StaticNodePool", func() {
 			ExpectApplied(ctx, env.Client, test.StaticNodePool(v1.NodePool{
 				Spec: v1.NodePoolSpec{
-					Replicas: lo.ToPtr(int64(2)),
+					Replicas: new(int64(2)),
 				}},
 			))
 			pod := test.UnschedulablePod()
@@ -2682,7 +2860,7 @@ var _ = Describe("Provisioning", func() {
 			targetedNodePool := test.NodePool()
 			staticNodePool := test.StaticNodePool(v1.NodePool{
 				Spec: v1.NodePoolSpec{
-					Replicas: lo.ToPtr(int64(1)),
+					Replicas: new(int64(1)),
 				}})
 			ExpectApplied(ctx, env.Client, targetedNodePool, staticNodePool)
 
@@ -2706,7 +2884,7 @@ var _ = Describe("Provisioning", func() {
 				// Create a nodepool with instance type minValues requirement
 				defaultNodePool = test.NodePool(v1.NodePool{
 					Spec: v1.NodePoolSpec{
-						Weight: lo.ToPtr(int32(100)),
+						Weight: new(int32(100)),
 						Template: v1.NodeClaimTemplate{
 							Spec: v1.NodeClaimTemplateSpec{
 								Requirements: []v1.NodeSelectorRequirementWithMinValues{
@@ -2715,7 +2893,7 @@ var _ = Describe("Provisioning", func() {
 										Operator: corev1.NodeSelectorOpIn,
 										Values:   []string{"instance-type-1", "instance-type-2", "instance-type-3"},
 
-										MinValues: lo.ToPtr(3),
+										MinValues: new(3),
 									},
 								},
 							},
@@ -2732,41 +2910,34 @@ var _ = Describe("Provisioning", func() {
 				It("should not schedule when minValues requirement is not met", func() {
 					// Create only two instance types, which doesn't meet the minValues=3 requirement
 					var instanceTypes []*cloudprovider.InstanceType
-					opts1 := fake.InstanceTypeOptions{
-						Name:             "instance-type-1",
-						Architecture:     v1.ArchitectureArm64,
-						OperatingSystems: sets.New(string(corev1.Linux)),
-						Resources: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("4"),
-							corev1.ResourceMemory: resource.MustParse("4Gi"),
-						},
-						Offerings: []*cloudprovider.Offering{
-							{
+					instanceTypes = append(instanceTypes,
+						fake.NewInstanceType("instance-type-1",
+							fake.WithArchitecture(v1.ArchitectureArm64),
+							fake.WithOperatingSystems(string(corev1.Linux)),
+							fake.WithResources(corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("4"),
+								corev1.ResourceMemory: resource.MustParse("4Gi"),
+							}),
+							fake.WithOfferings(cloudprovider.Offering{
 								Available:    true,
 								Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1-spot"}),
 								Price:        0.52,
-							},
-						},
-					}
-
-					opts2 := fake.InstanceTypeOptions{
-						Name:             "instance-type-2",
-						Architecture:     v1.ArchitectureArm64,
-						OperatingSystems: sets.New(string(corev1.Linux)),
-						Resources: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("4"),
-							corev1.ResourceMemory: resource.MustParse("4Gi"),
-						},
-						Offerings: []*cloudprovider.Offering{
-							{
+							}),
+						),
+						fake.NewInstanceType("instance-type-2",
+							fake.WithArchitecture(v1.ArchitectureArm64),
+							fake.WithOperatingSystems(string(corev1.Linux)),
+							fake.WithResources(corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("4"),
+								corev1.ResourceMemory: resource.MustParse("4Gi"),
+							}),
+							fake.WithOfferings(cloudprovider.Offering{
 								Available:    true,
 								Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-2-spot"}),
 								Price:        0.52,
-							},
-						},
-					}
-
-					instanceTypes = append(instanceTypes, fake.NewInstanceType(opts1), fake.NewInstanceType(opts2))
+							}),
+						),
+					)
 					cloudProvider.InstanceTypes = instanceTypes
 
 					ExpectApplied(ctx, env.Client, defaultNodePool)
@@ -2790,41 +2961,34 @@ var _ = Describe("Provisioning", func() {
 				It("should schedule even when minValues requirement is not met", func() {
 					// Create only two instance types, which doesn't meet the minValues=3 requirement
 					var instanceTypes []*cloudprovider.InstanceType
-					opts1 := fake.InstanceTypeOptions{
-						Name:             "instance-type-1",
-						Architecture:     v1.ArchitectureArm64,
-						OperatingSystems: sets.New(string(corev1.Linux)),
-						Resources: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("4"),
-							corev1.ResourceMemory: resource.MustParse("4Gi"),
-						},
-						Offerings: []*cloudprovider.Offering{
-							{
+					instanceTypes = append(instanceTypes,
+						fake.NewInstanceType("instance-type-1",
+							fake.WithArchitecture(v1.ArchitectureArm64),
+							fake.WithOperatingSystems(string(corev1.Linux)),
+							fake.WithResources(corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("4"),
+								corev1.ResourceMemory: resource.MustParse("4Gi"),
+							}),
+							fake.WithOfferings(cloudprovider.Offering{
 								Available:    true,
 								Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1-spot"}),
 								Price:        0.52,
-							},
-						},
-					}
-
-					opts2 := fake.InstanceTypeOptions{
-						Name:             "instance-type-2",
-						Architecture:     v1.ArchitectureArm64,
-						OperatingSystems: sets.New(string(corev1.Linux)),
-						Resources: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("4"),
-							corev1.ResourceMemory: resource.MustParse("4Gi"),
-						},
-						Offerings: []*cloudprovider.Offering{
-							{
+							}),
+						),
+						fake.NewInstanceType("instance-type-2",
+							fake.WithArchitecture(v1.ArchitectureArm64),
+							fake.WithOperatingSystems(string(corev1.Linux)),
+							fake.WithResources(corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("4"),
+								corev1.ResourceMemory: resource.MustParse("4Gi"),
+							}),
+							fake.WithOfferings(cloudprovider.Offering{
 								Available:    true,
 								Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-2-spot"}),
 								Price:        0.52,
-							},
-						},
-					}
-
-					instanceTypes = append(instanceTypes, fake.NewInstanceType(opts1), fake.NewInstanceType(opts2))
+							}),
+						),
+					)
 					cloudProvider.InstanceTypes = instanceTypes
 
 					ExpectApplied(ctx, env.Client, defaultNodePool)
@@ -2852,54 +3016,47 @@ var _ = Describe("Provisioning", func() {
 							Operator: corev1.NodeSelectorOpIn,
 							Values:   []string{"instance-type-1", "instance-type-2"},
 
-							MinValues: lo.ToPtr(2),
+							MinValues: new(2),
 						}))
 				})
 
 				It("should relax minValues before falling back to other nodepools", func() {
 					var instanceTypes []*cloudprovider.InstanceType
-					opts1 := fake.InstanceTypeOptions{
-						Name:             "instance-type-1",
-						Architecture:     v1.ArchitectureArm64,
-						OperatingSystems: sets.New(string(corev1.Linux)),
-						Resources: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("4"),
-							corev1.ResourceMemory: resource.MustParse("4Gi"),
-						},
-						Offerings: []*cloudprovider.Offering{
-							{
+					instanceTypes = append(instanceTypes,
+						fake.NewInstanceType("instance-type-1",
+							fake.WithArchitecture(v1.ArchitectureArm64),
+							fake.WithOperatingSystems(string(corev1.Linux)),
+							fake.WithResources(corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("4"),
+								corev1.ResourceMemory: resource.MustParse("4Gi"),
+							}),
+							fake.WithOfferings(cloudprovider.Offering{
 								Available:    true,
 								Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1-spot"}),
 								Price:        0.52,
-							},
-						},
-					}
-
-					opts2 := fake.InstanceTypeOptions{
-						Name:             "instance-type-2",
-						Architecture:     v1.ArchitectureArm64,
-						OperatingSystems: sets.New(string(corev1.Linux)),
-						Resources: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("4"),
-							corev1.ResourceMemory: resource.MustParse("4Gi"),
-						},
-						Offerings: []*cloudprovider.Offering{
-							{
+							}),
+						),
+						fake.NewInstanceType("instance-type-2",
+							fake.WithArchitecture(v1.ArchitectureArm64),
+							fake.WithOperatingSystems(string(corev1.Linux)),
+							fake.WithResources(corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("4"),
+								corev1.ResourceMemory: resource.MustParse("4Gi"),
+							}),
+							fake.WithOfferings(cloudprovider.Offering{
 								Available:    true,
 								Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-2-spot"}),
 								Price:        0.52,
-							},
-						},
-					}
-
-					instanceTypes = append(instanceTypes, fake.NewInstanceType(opts1), fake.NewInstanceType(opts2))
+							}),
+						),
+					)
 					cloudProvider.InstanceTypes = instanceTypes
 
 					ExpectApplied(ctx, env.Client, defaultNodePool)
 
 					nodePoolWithNoMinValues := test.NodePool(v1.NodePool{
 						Spec: v1.NodePoolSpec{
-							Weight: lo.ToPtr(int32(10)),
+							Weight: new(int32(10)),
 							Template: v1.NodeClaimTemplate{
 								Spec: v1.NodeClaimTemplateSpec{
 									Requirements: []v1.NodeSelectorRequirementWithMinValues{
@@ -2935,54 +3092,47 @@ var _ = Describe("Provisioning", func() {
 							Operator: corev1.NodeSelectorOpIn,
 							Values:   []string{"instance-type-1", "instance-type-2"},
 
-							MinValues: lo.ToPtr(2),
+							MinValues: new(2),
 						}))
 				})
 
 				It("should choose nodepool with higher weight when relaxing minValues", func() {
 					var instanceTypes []*cloudprovider.InstanceType
-					opts1 := fake.InstanceTypeOptions{
-						Name:             "instance-type-1",
-						Architecture:     v1.ArchitectureArm64,
-						OperatingSystems: sets.New(string(corev1.Linux)),
-						Resources: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("4"),
-							corev1.ResourceMemory: resource.MustParse("4Gi"),
-						},
-						Offerings: []*cloudprovider.Offering{
-							{
+					instanceTypes = append(instanceTypes,
+						fake.NewInstanceType("instance-type-1",
+							fake.WithArchitecture(v1.ArchitectureArm64),
+							fake.WithOperatingSystems(string(corev1.Linux)),
+							fake.WithResources(corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("4"),
+								corev1.ResourceMemory: resource.MustParse("4Gi"),
+							}),
+							fake.WithOfferings(cloudprovider.Offering{
 								Available:    true,
 								Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1-spot"}),
 								Price:        0.52,
-							},
-						},
-					}
-
-					opts2 := fake.InstanceTypeOptions{
-						Name:             "instance-type-2",
-						Architecture:     v1.ArchitectureArm64,
-						OperatingSystems: sets.New(string(corev1.Linux)),
-						Resources: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("4"),
-							corev1.ResourceMemory: resource.MustParse("4Gi"),
-						},
-						Offerings: []*cloudprovider.Offering{
-							{
+							}),
+						),
+						fake.NewInstanceType("instance-type-2",
+							fake.WithArchitecture(v1.ArchitectureArm64),
+							fake.WithOperatingSystems(string(corev1.Linux)),
+							fake.WithResources(corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("4"),
+								corev1.ResourceMemory: resource.MustParse("4Gi"),
+							}),
+							fake.WithOfferings(cloudprovider.Offering{
 								Available:    true,
 								Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-2-spot"}),
 								Price:        0.52,
-							},
-						},
-					}
-
-					instanceTypes = append(instanceTypes, fake.NewInstanceType(opts1), fake.NewInstanceType(opts2))
+							}),
+						),
+					)
 					cloudProvider.InstanceTypes = instanceTypes
 
 					ExpectApplied(ctx, env.Client, defaultNodePool)
 
 					lowerWeightNodePool := test.NodePool(v1.NodePool{
 						Spec: v1.NodePoolSpec{
-							Weight: lo.ToPtr(int32(10)),
+							Weight: new(int32(10)),
 							Template: v1.NodeClaimTemplate{
 								Spec: v1.NodeClaimTemplateSpec{
 									Requirements: []v1.NodeSelectorRequirementWithMinValues{
@@ -2991,7 +3141,7 @@ var _ = Describe("Provisioning", func() {
 											Operator: corev1.NodeSelectorOpIn,
 											Values:   []string{"instance-type-1", "instance-type-2", "instance-type-3"},
 
-											MinValues: lo.ToPtr(3),
+											MinValues: new(3),
 										},
 									},
 								},
@@ -3027,7 +3177,7 @@ var _ = Describe("Provisioning", func() {
 							Operator: corev1.NodeSelectorOpIn,
 							Values:   []string{"instance-type-1", "instance-type-2"},
 
-							MinValues: lo.ToPtr(2),
+							MinValues: new(2),
 						}))
 				})
 			})
@@ -3048,7 +3198,7 @@ var _ = Describe("Provisioning", func() {
 										Operator: corev1.NodeSelectorOpIn,
 										Values:   []string{"test-zone-1", "test-zone-2", "test-zone-3"},
 
-										MinValues: lo.ToPtr(3),
+										MinValues: new(3),
 									},
 								},
 							},
@@ -3065,28 +3215,26 @@ var _ = Describe("Provisioning", func() {
 				It("should not schedule when zone minValues requirement is not met", func() {
 					// Create instance types with only two zones, which doesn't meet the minValues=3 requirement
 					var instanceTypes []*cloudprovider.InstanceType
-					opts1 := fake.InstanceTypeOptions{
-						Name:             "instance-type-1",
-						Architecture:     v1.ArchitectureArm64,
-						OperatingSystems: sets.New(string(corev1.Linux)),
-						Resources: corev1.ResourceList{
+					instanceTypes = append(instanceTypes, fake.NewInstanceType("instance-type-1",
+						fake.WithArchitecture(v1.ArchitectureArm64),
+						fake.WithOperatingSystems(string(corev1.Linux)),
+						fake.WithResources(corev1.ResourceList{
 							corev1.ResourceCPU:    resource.MustParse("4"),
 							corev1.ResourceMemory: resource.MustParse("4Gi"),
-						},
-					}
-					opts1.Offerings = []*cloudprovider.Offering{
-						{
-							Available:    true,
-							Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1"}),
-							Price:        0.52,
-						},
-						{
-							Available:    true,
-							Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-2"}),
-							Price:        0.54,
-						},
-					}
-					instanceTypes = append(instanceTypes, fake.NewInstanceType(opts1))
+						}),
+						fake.WithOfferings(
+							cloudprovider.Offering{
+								Available:    true,
+								Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1"}),
+								Price:        0.52,
+							},
+							cloudprovider.Offering{
+								Available:    true,
+								Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-2"}),
+								Price:        0.54,
+							},
+						),
+					))
 					cloudProvider.InstanceTypes = instanceTypes
 
 					ExpectApplied(ctx, env.Client, nodePool)
@@ -3110,28 +3258,26 @@ var _ = Describe("Provisioning", func() {
 				It("should schedule even when zone minValues requirement is not met", func() {
 					// Create instance types with only two zones, which doesn't meet the minValues=3 requirement
 					var instanceTypes []*cloudprovider.InstanceType
-					opts1 := fake.InstanceTypeOptions{
-						Name:             "instance-type-1",
-						Architecture:     v1.ArchitectureArm64,
-						OperatingSystems: sets.New(string(corev1.Linux)),
-						Resources: corev1.ResourceList{
+					instanceTypes = append(instanceTypes, fake.NewInstanceType("instance-type-1",
+						fake.WithArchitecture(v1.ArchitectureArm64),
+						fake.WithOperatingSystems(string(corev1.Linux)),
+						fake.WithResources(corev1.ResourceList{
 							corev1.ResourceCPU:    resource.MustParse("4"),
 							corev1.ResourceMemory: resource.MustParse("4Gi"),
-						},
-					}
-					opts1.Offerings = []*cloudprovider.Offering{
-						{
-							Available:    true,
-							Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1"}),
-							Price:        0.52,
-						},
-						{
-							Available:    true,
-							Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-2"}),
-							Price:        0.54,
-						},
-					}
-					instanceTypes = append(instanceTypes, fake.NewInstanceType(opts1))
+						}),
+						fake.WithOfferings(
+							cloudprovider.Offering{
+								Available:    true,
+								Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1"}),
+								Price:        0.52,
+							},
+							cloudprovider.Offering{
+								Available:    true,
+								Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-2"}),
+								Price:        0.54,
+							},
+						),
+					))
 					cloudProvider.InstanceTypes = instanceTypes
 
 					ExpectApplied(ctx, env.Client, nodePool)
@@ -3160,7 +3306,7 @@ var _ = Describe("Provisioning", func() {
 							Operator: corev1.NodeSelectorOpIn,
 							Values:   []string{"test-zone-1", "test-zone-2", "test-zone-3"},
 
-							MinValues: lo.ToPtr(2),
+							MinValues: new(2),
 						}))
 				})
 			})
@@ -3173,7 +3319,7 @@ var _ = Describe("Provisioning", func() {
 				// Create a nodepool with instance type minValues requirement
 				defaultNodePool = test.NodePool(v1.NodePool{
 					Spec: v1.NodePoolSpec{
-						Weight: lo.ToPtr(int32(100)),
+						Weight: new(int32(100)),
 						Template: v1.NodeClaimTemplate{
 							Spec: v1.NodeClaimTemplateSpec{
 								Requirements: []v1.NodeSelectorRequirementWithMinValues{
@@ -3182,14 +3328,14 @@ var _ = Describe("Provisioning", func() {
 										Operator: corev1.NodeSelectorOpIn,
 										Values:   []string{"instance-type-1", "instance-type-2", "instance-type-3"},
 
-										MinValues: lo.ToPtr(3),
+										MinValues: new(3),
 									},
 									{
 										Key:      corev1.LabelTopologyZone,
 										Operator: corev1.NodeSelectorOpIn,
 										Values:   []string{"test-zone-1", "test-zone-2", "test-zone-3"},
 
-										MinValues: lo.ToPtr(3),
+										MinValues: new(3),
 									},
 								},
 							},
@@ -3205,28 +3351,26 @@ var _ = Describe("Provisioning", func() {
 
 				It("should schedule when minValues requirement is not met", func() {
 					var instanceTypes []*cloudprovider.InstanceType
-					opts1 := fake.InstanceTypeOptions{
-						Name:             "instance-type-1",
-						Architecture:     v1.ArchitectureArm64,
-						OperatingSystems: sets.New(string(corev1.Linux)),
-						Resources: corev1.ResourceList{
+					instanceTypes = append(instanceTypes, fake.NewInstanceType("instance-type-1",
+						fake.WithArchitecture(v1.ArchitectureArm64),
+						fake.WithOperatingSystems(string(corev1.Linux)),
+						fake.WithResources(corev1.ResourceList{
 							corev1.ResourceCPU:    resource.MustParse("4"),
 							corev1.ResourceMemory: resource.MustParse("4Gi"),
-						},
-					}
-					opts1.Offerings = []*cloudprovider.Offering{
-						{
-							Available:    true,
-							Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1"}),
-							Price:        0.52,
-						},
-						{
-							Available:    true,
-							Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-2"}),
-							Price:        0.54,
-						},
-					}
-					instanceTypes = append(instanceTypes, fake.NewInstanceType(opts1))
+						}),
+						fake.WithOfferings(
+							cloudprovider.Offering{
+								Available:    true,
+								Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1"}),
+								Price:        0.52,
+							},
+							cloudprovider.Offering{
+								Available:    true,
+								Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-2"}),
+								Price:        0.54,
+							},
+						),
+					))
 					cloudProvider.InstanceTypes = instanceTypes
 
 					ExpectApplied(ctx, env.Client, defaultNodePool)
@@ -3250,14 +3394,14 @@ var _ = Describe("Provisioning", func() {
 							Operator: corev1.NodeSelectorOpIn,
 							Values:   []string{"instance-type-1"},
 
-							MinValues: lo.ToPtr(1),
+							MinValues: new(1),
 						},
 						v1.NodeSelectorRequirementWithMinValues{
 							Key:      corev1.LabelTopologyZone,
 							Operator: corev1.NodeSelectorOpIn,
 							Values:   []string{"test-zone-1", "test-zone-2", "test-zone-3"},
 
-							MinValues: lo.ToPtr(2),
+							MinValues: new(2),
 						}))
 
 					ExpectMetricCounterValue(metrics.NodeClaimsCreatedTotal, 1, map[string]string{
@@ -3295,25 +3439,19 @@ func ExpectNodeClaimRequests(nodeClaim *v1.NodeClaim, resources corev1.ResourceL
 }
 
 func AddInstanceResources(instanceTypes []*cloudprovider.InstanceType, resources corev1.ResourceList) []*cloudprovider.InstanceType {
-	opts := fake.InstanceTypeOptions{
-		Name:             "example",
-		Architecture:     "arch",
-		Resources:        resources,
-		OperatingSystems: sets.New(string(corev1.Linux)),
-	}
-	price := fake.PriceFromResources(opts.Resources)
-	opts.Offerings = []*cloudprovider.Offering{
-		{
+	price := fake.PriceFromResources(resources)
+	instanceTypes = append(instanceTypes, fake.NewInstanceType("example",
+		fake.WithArchitecture("arch"),
+		fake.WithResources(resources),
+		fake.WithOperatingSystems(string(corev1.Linux)),
+		fake.WithOfferings(cloudprovider.Offering{
 			Available: true,
 			Requirements: scheduling.NewLabelRequirements(map[string]string{
 				v1.CapacityTypeLabelKey:  v1.CapacityTypeSpot,
 				corev1.LabelTopologyZone: "test-zone-1",
 			}),
 			Price: price,
-		},
-	}
-
-	instanceTypes = append(instanceTypes, fake.NewInstanceType(opts))
-
+		}),
+	))
 	return instanceTypes
 }

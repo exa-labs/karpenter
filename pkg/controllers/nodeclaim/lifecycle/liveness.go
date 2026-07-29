@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/awslabs/operatorpkg/object"
+	"github.com/awslabs/operatorpkg/status"
 	"github.com/samber/lo"
 	"k8s.io/apimachinery/pkg/api/errors"
 
@@ -45,31 +46,17 @@ type Liveness struct {
 }
 
 // registrationTimeout is a heuristic time that we expect the node to register within
-// launchTimeout is a heuristic time that we expect to be able to launch within
 // If we don't see the node within this time, then we should delete the NodeClaim and try again
 
 const (
 	registrationTimeout       = time.Minute * 15
 	registrationTimeoutReason = "registration_timeout"
-	launchTimeout             = time.Minute * 5
 	launchTimeoutReason       = "launch_timeout"
 )
 
-type NodeClaimTimeout struct {
-	duration time.Duration
-	reason   string
-}
-
-var (
-	RegistrationTimeout = NodeClaimTimeout{
-		duration: registrationTimeout,
-		reason:   registrationTimeoutReason,
-	}
-	LaunchTimeout = NodeClaimTimeout{
-		duration: launchTimeout,
-		reason:   launchTimeoutReason,
-	}
-)
+// LaunchTimeout is a heuristic time that we expect to be able to launch within
+// If we don't launch within this time, then we should delete the NodeClaim and try again
+var LaunchTimeout = time.Minute * 5
 
 //nolint:gocyclo
 func (l *Liveness) Reconcile(ctx context.Context, nodeClaim *v1.NodeClaim) (reconcile.Result, error) {
@@ -82,7 +69,7 @@ func (l *Liveness) Reconcile(ctx context.Context, nodeClaim *v1.NodeClaim) (reco
 		return reconcile.Result{Requeue: true}, nil
 	}
 	if !launched.IsTrue() {
-		if timeUntilTimeout := launchTimeout - l.clock.Since(launched.LastTransitionTime.Time); timeUntilTimeout > 0 {
+		if timeUntilTimeout := LaunchTimeout - l.clock.Since(launched.LastTransitionTime.Time); timeUntilTimeout > 0 {
 			// This should never occur because if we failed to launch we requeue the object with error instead of this requeueAfter
 			return reconcile.Result{RequeueAfter: timeUntilTimeout}, nil
 		}
@@ -92,7 +79,7 @@ func (l *Liveness) Reconcile(ctx context.Context, nodeClaim *v1.NodeClaim) (reco
 			}
 			return reconcile.Result{}, err
 		}
-		if err := l.deleteNodeClaimForTimeout(ctx, LaunchTimeout, nodeClaim); err != nil {
+		if err := l.deleteNodeClaimForTimeout(ctx, LaunchTimeout, launchTimeoutReason, nodeClaim); err != nil {
 			if client.IgnoreNotFound(err) != nil {
 				return reconcile.Result{}, err
 			}
@@ -114,7 +101,7 @@ func (l *Liveness) Reconcile(ctx context.Context, nodeClaim *v1.NodeClaim) (reco
 		return reconcile.Result{}, err
 	}
 	// Delete the NodeClaim if we believe the NodeClaim won't register since we haven't seen the node
-	if err := l.deleteNodeClaimForTimeout(ctx, RegistrationTimeout, nodeClaim); err != nil {
+	if err := l.deleteNodeClaimForTimeout(ctx, registrationTimeout, registrationTimeoutReason, nodeClaim); err != nil {
 		if client.IgnoreNotFound(err) != nil {
 			return reconcile.Result{}, err
 		}
@@ -142,9 +129,9 @@ func (l *Liveness) updateNodePoolRegistrationHealth(ctx context.Context, nodeCla
 			// If the nodeClaim failed to register during the timeout set NodeRegistrationHealthy status condition on
 			// NodePool to False. If the launch failed get the launch failure reason and message from nodeClaim.
 			if launchCondition := nodeClaim.StatusConditions().Get(v1.ConditionTypeLaunched); launchCondition.IsTrue() {
-				nodePool.StatusConditions().SetFalse(v1.ConditionTypeNodeRegistrationHealthy, "RegistrationFailed", "Failed to register node")
+				nodePool.StatusConditions(status.WithClock(l.clock)).SetFalse(v1.ConditionTypeNodeRegistrationHealthy, "RegistrationFailed", "Failed to register node")
 			} else {
-				nodePool.StatusConditions().SetFalse(v1.ConditionTypeNodeRegistrationHealthy, launchCondition.Reason, launchCondition.Message)
+				nodePool.StatusConditions(status.WithClock(l.clock)).SetFalse(v1.ConditionTypeNodeRegistrationHealthy, launchCondition.Reason, launchCondition.Message)
 			}
 			// We use client.MergeFromWithOptimisticLock because patching a list with a JSON merge patch
 			// can cause races due to the fact that it fully replaces the list on a change
@@ -158,13 +145,13 @@ func (l *Liveness) updateNodePoolRegistrationHealth(ctx context.Context, nodeCla
 	return nil
 }
 
-func (l *Liveness) deleteNodeClaimForTimeout(ctx context.Context, timeout NodeClaimTimeout, nodeClaim *v1.NodeClaim) error {
+func (l *Liveness) deleteNodeClaimForTimeout(ctx context.Context, timeout time.Duration, reason string, nodeClaim *v1.NodeClaim) error {
 	if err := l.kubeClient.Delete(ctx, nodeClaim); err != nil {
 		return err
 	}
-	log.FromContext(ctx).V(1).WithValues("timeout", timeout.duration, "reason", timeout.reason).Info("terminating due to timeout")
+	log.FromContext(ctx).V(1).WithValues("timeout", timeout, "reason", reason).Info("terminating due to timeout")
 	metrics.NodeClaimsDisruptedTotal.Inc(map[string]string{
-		metrics.ReasonLabel:       timeout.reason,
+		metrics.ReasonLabel:       reason,
 		metrics.NodePoolLabel:     nodeClaim.Labels[v1.NodePoolLabelKey],
 		metrics.CapacityTypeLabel: nodeClaim.Labels[v1.CapacityTypeLabelKey],
 	})
