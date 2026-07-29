@@ -17,10 +17,14 @@ limitations under the License.
 package disruption
 
 import (
+	"sort"
+	"strings"
+
 	opmetrics "github.com/awslabs/operatorpkg/metrics"
 	"github.com/prometheus/client_golang/prometheus"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
+	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/metrics"
 )
 
@@ -30,6 +34,26 @@ const (
 	ConsolidationTypeLabel       = "consolidation_type"
 	CandidatesIneligible         = "candidates_ineligible"
 	policyLabel                  = "policy"
+	outcomeLabel                 = "outcome"
+	reasonLabel                  = "reason"
+	capacityTypeTransitionLabel  = "capacity_type_transition"
+)
+
+const (
+	PassOutcomeCompleted              = "completed"
+	PassOutcomeTimedOut               = "timed_out"
+	PassOutcomeBudgetConstrained      = "budget_constrained"
+	PassOutcomeNoOp                   = "no_op"
+	CandidateSkipBudgetExhausted      = "budget_exhausted"
+	CandidateSkipThreshold            = "cannot_pass_threshold"
+	CandidateSkipNoOp                 = "noop_decision"
+	CandidateSkipPodsDidNotSchedule   = "pods_did_not_schedule"
+	CandidateSkipMultipleReplacements = "multiple_replacements_required"
+)
+
+var (
+	consolidationCandidateBuckets = []float64{1, 2, 5, 10, 25, 50, 100, 150, 200, 250, 300, 400, 500, 750, 1000}
+	durationBuckets               = []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 2, 5, 10, 30, 60}
 )
 
 func init() {
@@ -148,4 +172,155 @@ var (
 		},
 		[]string{decisionLabel, metrics.NodePoolLabel, policyLabel},
 	)
+	ConsolidationCandidateDepth = opmetrics.NewPrometheusHistogram(
+		crmetrics.Registry,
+		prometheus.HistogramOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "consolidation_candidate_depth",
+			Help:      "Number of candidates evaluated in a consolidation pass. Labeled by consolidation type.",
+			Buckets:   consolidationCandidateBuckets,
+		},
+		[]string{ConsolidationTypeLabel},
+	)
+	AcceptedCandidatePosition = opmetrics.NewPrometheusHistogram(
+		crmetrics.Registry,
+		prometheus.HistogramOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "consolidation_accepted_candidate_position",
+			Help:      "Zero-based position of the candidate that produced an accepted consolidation command.",
+			Buckets:   consolidationCandidateBuckets,
+		},
+		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel},
+	)
+	SchedulerConstructionDurationSeconds = opmetrics.NewPrometheusHistogram(
+		crmetrics.Registry,
+		prometheus.HistogramOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "scheduler_construction_duration_seconds",
+			Help:      "Duration spent constructing a scheduler during consolidation simulation.",
+			Buckets:   durationBuckets,
+		},
+		[]string{ConsolidationTypeLabel},
+	)
+	CandidateSimulationDurationSeconds = opmetrics.NewPrometheusHistogram(
+		crmetrics.Registry,
+		prometheus.HistogramOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "candidate_simulation_duration_seconds",
+			Help:      "Per-candidate duration spent solving a consolidation simulation, excluding scheduler construction.",
+			Buckets:   durationBuckets,
+		},
+		[]string{ConsolidationTypeLabel},
+	)
+	ConsolidationPassOutcomesTotal = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "consolidation_pass_outcomes_total",
+			Help:      "Number of consolidation passes by outcome and consolidation type.",
+		},
+		[]string{ConsolidationTypeLabel, outcomeLabel},
+	)
+	ConsolidationCandidateSkipsTotal = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "consolidation_candidate_skips_total",
+			Help:      "Number of skipped consolidation candidates by type, NodePool, and reason.",
+		},
+		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel, reasonLabel},
+	)
+	ConsolidationRequiredReplacements = opmetrics.NewPrometheusHistogram(
+		crmetrics.Registry,
+		prometheus.HistogramOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "consolidation_required_replacements",
+			Help:      "Number of replacement NodeClaims required by a consolidation simulation that cannot be represented as one replacement.",
+			Buckets:   []float64{2, 3, 4, 5, 8, 10, 20, 50, 100},
+		},
+		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel},
+	)
+	ConsolidationRealizedSavingsDollarsPerHourTotal = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "consolidation_realized_savings_dollars_per_hour_total",
+			Help:      "Cumulative realized hourly savings from successful consolidation commands.",
+		},
+		[]string{metrics.NodePoolLabel, decisionLabel, capacityTypeTransitionLabel},
+	)
 )
+
+func ObserveConsolidationCandidateSkip(consolidationType, nodePool, reason string) {
+	ConsolidationCandidateSkipsTotal.Inc(map[string]string{
+		ConsolidationTypeLabel: consolidationType,
+		metrics.NodePoolLabel:  nodePool,
+		reasonLabel:            reason,
+	})
+}
+
+func ObserveConsolidationPass(consolidationType, outcome string, depth int) {
+	ConsolidationCandidateDepth.Observe(float64(depth), map[string]string{ConsolidationTypeLabel: consolidationType})
+	ConsolidationPassOutcomesTotal.Inc(map[string]string{
+		ConsolidationTypeLabel: consolidationType,
+		outcomeLabel:           outcome,
+	})
+}
+
+func ObserveAcceptedCandidate(cmd Command, consolidationType string, position int) {
+	for _, candidate := range cmd.Candidates {
+		AcceptedCandidatePosition.Observe(float64(position), map[string]string{
+			ConsolidationTypeLabel: consolidationType,
+			metrics.NodePoolLabel:  candidate.NodePool.Name,
+		})
+	}
+}
+
+func ObserveRealizedSavings(cmd Command) {
+	transition := capacityTypeTransition(cmd)
+	for _, candidate := range cmd.Candidates {
+		ConsolidationRealizedSavingsDollarsPerHourTotal.Add(cmd.EstimatedSavings()/float64(len(cmd.Candidates)), map[string]string{
+			metrics.NodePoolLabel:       candidate.NodePool.Name,
+			decisionLabel:               string(cmd.Decision()),
+			capacityTypeTransitionLabel: transition,
+		})
+	}
+}
+
+func capacityTypeTransition(cmd Command) string {
+	sources := make([]string, 0, len(cmd.Candidates))
+	for _, candidate := range cmd.Candidates {
+		sources = append(sources, candidate.capacityType)
+	}
+	sources = uniqueSorted(sources)
+	destinations := make([]string, 0, len(cmd.Replacements))
+	for _, replacement := range cmd.Replacements {
+		if requirement := replacement.Requirements.Get(v1.CapacityTypeLabelKey); requirement != nil {
+			destinations = append(destinations, requirement.Values()...)
+		}
+	}
+	destinations = uniqueSorted(destinations)
+	if len(destinations) == 0 {
+		destinations = []string{"none"}
+	}
+	return strings.Join(sources, ",") + "->" + strings.Join(destinations, ",")
+}
+
+func uniqueSorted(values []string) []string {
+	sort.Strings(values)
+	result := values[:0]
+	for _, value := range values {
+		if len(result) == 0 || result[len(result)-1] != value {
+			result = append(result, value)
+		}
+	}
+	return result
+}

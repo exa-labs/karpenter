@@ -122,15 +122,27 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 	if err != nil {
 		return scheduling.Results{}, fmt.Errorf("creating scheduler, %w", err)
 	}
+	constructionDuration := time.Since(schedulerStart)
+	if consolidationType := consolidationTypeFromContext(ctx); consolidationType != "" {
+		SchedulerConstructionDurationSeconds.Observe(constructionDuration.Seconds(), map[string]string{
+			ConsolidationTypeLabel: consolidationType,
+		})
+	}
 	log.FromContext(ctx).V(1).Info("consolidation scheduler constructed", "duration", time.Since(schedulerStart), "candidates", len(candidates))
 
 	deletingNodePodKeys := lo.SliceToMap(deletingNodePods, func(p *corev1.Pod) (client.ObjectKey, any) {
 		return client.ObjectKeyFromObject(p), nil
 	})
 
+	simulationStart := time.Now()
 	results, err := scheduler.Solve(log.IntoContext(ctx, operatorlogging.NopLogger), pods)
 	if err != nil {
 		return scheduling.Results{}, fmt.Errorf("scheduling pods, %w", err)
+	}
+	if consolidationType := consolidationTypeFromContext(ctx); consolidationType != "" && len(candidates) > 0 {
+		CandidateSimulationDurationSeconds.Observe(time.Since(simulationStart).Seconds()/float64(len(candidates)), map[string]string{
+			ConsolidationTypeLabel: consolidationType,
+		})
 	}
 	results = results.TruncateInstanceTypes(ctx, scheduling.MaxInstanceTypes)
 	for _, n := range results.ExistingNodes {

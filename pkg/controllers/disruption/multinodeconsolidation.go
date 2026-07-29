@@ -50,6 +50,15 @@ func NewMultiNodeConsolidation(c consolidation, opts ...option.Function[MethodOp
 
 // nolint:gocyclo
 func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruptionBudgetMapping map[string]int, candidates ...*Candidate) ([]Command, error) {
+	depth := len(candidates)
+	outcome := PassOutcomeNoOp
+	timedOut := false
+	defer func() {
+		if timedOut {
+			outcome = PassOutcomeTimedOut
+		}
+		ObserveConsolidationPass(m.ConsolidationType(), outcome, depth)
+	}()
 	if m.IsConsolidated() {
 		return []Command{}, nil
 	}
@@ -69,6 +78,7 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 		// add it to the list of candidates, and decrement the budget.
 		if disruptionBudgetMapping[candidate.NodePool.Name] == 0 {
 			constrainedByBudgets = true
+			ObserveConsolidationCandidateSkip(m.ConsolidationType(), candidate.NodePool.Name, CandidateSkipBudgetExhausted)
 			continue
 		}
 		// set constrainedByBudgets to true if any node was a candidate but was constrained by a budget
@@ -80,7 +90,7 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 	// This could be further configurable in the future.
 	maxParallel := lo.Clamp(len(disruptableCandidates), 0, 100)
 
-	cmd, perPoolResults, err := m.firstNConsolidationOption(ctx, disruptableCandidates, maxParallel)
+	cmd, perPoolResults, err := m.firstNConsolidationOption(ctx, disruptableCandidates, maxParallel, &timedOut, &depth)
 	if err != nil {
 		return []Command{}, err
 	}
@@ -91,6 +101,8 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 		// the next time we try to disrupt.
 		if !constrainedByBudgets {
 			m.markConsolidated()
+		} else {
+			outcome = PassOutcomeBudgetConstrained
 		}
 		return []Command{}, nil
 	}
@@ -108,13 +120,15 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 		}
 		return []Command{}, fmt.Errorf("validating consolidation, %w", err)
 	}
+	outcome = PassOutcomeCompleted
+	ObserveAcceptedCandidate(cmd, m.ConsolidationType(), len(cmd.Candidates)-1)
 	return []Command{cmd}, nil
 }
 
 // firstNConsolidationOption looks at the first N NodeClaims to determine if they can all be consolidated at once.  The
 // NodeClaims are sorted by increasing disruption order which correlates to likelihood of being able to consolidate the node
 // nolint:gocyclo
-func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, candidates []*Candidate, max int) (Command, map[string]ScoreResult, error) {
+func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, candidates []*Candidate, max int, timedOut *bool, depth *int) (Command, map[string]ScoreResult, error) {
 	// we always operate on at least two NodeClaims at once, for single NodeClaims standard consolidation will find all solutions
 	if len(candidates) < 2 {
 		return Command{}, nil, nil
@@ -136,12 +150,16 @@ func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, 
 	for min <= max {
 		mid := (min + max) / 2
 		candidatesToConsolidate := candidates[0 : mid+1]
+		if len(candidatesToConsolidate) > *depth {
+			*depth = len(candidatesToConsolidate)
+		}
 
 		// Pass the timeout context to ensure sub-operations can be canceled
-		cmd, err := m.computeConsolidation(timeoutCtx, candidatesToConsolidate...)
+		cmd, err := m.computeConsolidation(timeoutCtx, m.ConsolidationType(), candidatesToConsolidate...)
 		// context deadline exceeded will return to the top of the loop and either return nothing or the last saved command
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
+				*timedOut = true
 				ConsolidationTimeoutsTotal.Inc(map[string]string{ConsolidationTypeLabel: m.ConsolidationType()})
 				if lastSavedCommand.Candidates == nil {
 					log.FromContext(ctx).V(1).Info("failed to find a multi-node consolidation after timeout", "last_batch_size", (min+max)/2)
@@ -152,6 +170,11 @@ func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, 
 
 			}
 			return Command{}, nil, err
+		}
+		if cmd.Decision() == NoOpDecision {
+			for _, candidate := range candidatesToConsolidate {
+				ObserveConsolidationCandidateSkip(m.ConsolidationType(), candidate.NodePool.Name, CandidateSkipNoOp)
+			}
 		}
 		// ensure that the action is sensical for replacements, see explanation on filterOutSameType for why this is
 		// required

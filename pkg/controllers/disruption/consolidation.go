@@ -37,9 +37,21 @@ import (
 	pscheduling "sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	"sigs.k8s.io/karpenter/pkg/events"
+	"sigs.k8s.io/karpenter/pkg/metrics"
 	"sigs.k8s.io/karpenter/pkg/operator/options"
 	"sigs.k8s.io/karpenter/pkg/scheduling"
 )
+
+type consolidationTypeContextKey struct{}
+
+func withConsolidationType(ctx context.Context, consolidationType string) context.Context {
+	return context.WithValue(ctx, consolidationTypeContextKey{}, consolidationType)
+}
+
+func consolidationTypeFromContext(ctx context.Context) string {
+	consolidationType, _ := ctx.Value(consolidationTypeContextKey{}).(string)
+	return consolidationType
+}
 
 // commandValidationDelay is the time we wait between creating a consolidation command and validating that it still works.
 const commandValidationDelay = 15 * time.Second
@@ -156,10 +168,10 @@ func (c *consolidation) sortCandidates(_ context.Context, candidates []*Candidat
 // computeConsolidation computes a consolidation action to take
 //
 // nolint:gocyclo
-func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...*Candidate) (Command, error) {
+func (c *consolidation) computeConsolidation(ctx context.Context, consolidationType string, candidates ...*Candidate) (Command, error) {
 	var err error
 	// Run scheduling simulation to compute consolidation option
-	results, err := SimulateScheduling(ctx, c.kubeClient, c.cluster, c.provisioner, c.clock, c.recorder, []pscheduling.Options{pscheduling.IsConsolidationSimulation}, candidates...)
+	results, err := SimulateScheduling(withConsolidationType(ctx, consolidationType), c.kubeClient, c.cluster, c.provisioner, c.clock, c.recorder, []pscheduling.Options{pscheduling.IsConsolidationSimulation}, candidates...)
 	if err != nil {
 		// if a candidate node is now deleting, just retry
 		if errors.Is(err, errCandidateDeleting) {
@@ -170,6 +182,9 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 
 	// if not all of the pods were scheduled, we can't do anything
 	if !results.AllNonPendingPodsScheduled() {
+		for _, nodePool := range candidateNodePools(candidates) {
+			ObserveConsolidationCandidateSkip(consolidationType, nodePool, CandidateSkipPodsDidNotSchedule)
+		}
 		// This method is used by multi-node consolidation as well, so we'll only report in the single node case
 		if len(candidates) == 1 {
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, pretty.Sentence(results.NonPendingPodSchedulingErrors()))...)
@@ -188,6 +203,13 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 
 	// we're not going to turn a single node into multiple candidates
 	if len(results.NewNodeClaims) != 1 {
+		for _, nodePool := range candidateNodePools(candidates) {
+			ObserveConsolidationCandidateSkip(consolidationType, nodePool, CandidateSkipMultipleReplacements)
+			ConsolidationRequiredReplacements.Observe(float64(len(results.NewNodeClaims)), map[string]string{
+				ConsolidationTypeLabel: consolidationType,
+				metrics.NodePoolLabel:  nodePool,
+			})
+		}
 		if len(candidates) == 1 {
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Can't remove without creating %d candidates", len(results.NewNodeClaims)))...)
 		}
@@ -251,6 +273,14 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 	cmd.EmitCandidateEvents(c.recorder)
 
 	return cmd, nil
+}
+
+func candidateNodePools(candidates []*Candidate) []string {
+	nodePools := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		nodePools = append(nodePools, candidate.NodePool.Name)
+	}
+	return uniqueSorted(nodePools)
 }
 
 // Compute command to execute spot-to-spot consolidation if:
