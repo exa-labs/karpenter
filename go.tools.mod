@@ -8,7 +8,6 @@ go 1.26.5
 tool (
 	github.com/B1NARY-GR0UP/nwa
 	github.com/google/go-licenses/v2
-	github.com/mattn/goveralls
 	github.com/norwoodj/helm-docs/cmd/helm-docs
 	github.com/onsi/ginkgo/v2/ginkgo
 	github.com/rhysd/actionlint/cmd/actionlint
@@ -219,7 +218,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.23 // indirect
 	github.com/mattn/go-shellwords v1.0.12 // indirect
-	github.com/mattn/goveralls v0.0.12 // indirect
 	github.com/mgechev/revive v1.15.0 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
