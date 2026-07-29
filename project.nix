@@ -16,5 +16,7 @@ makeGoProject {
   workspaceRoot = ./.;
   goLock = ./gobuild-nix.lock;
   inherit pkgs;
-  env.KUBEBUILDER_ASSETS = envtestAssets;
+  env = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+    KUBEBUILDER_ASSETS = envtestAssets;
+  };
 }
