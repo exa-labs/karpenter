@@ -139,8 +139,8 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 	if err != nil {
 		return scheduling.Results{}, fmt.Errorf("scheduling pods, %w", err)
 	}
-	if consolidationType := consolidationTypeFromContext(ctx); consolidationType != "" && len(candidates) > 0 {
-		CandidateSimulationDurationSeconds.Observe(time.Since(simulationStart).Seconds()/float64(len(candidates)), map[string]string{
+	if consolidationType := consolidationTypeFromContext(ctx); consolidationType != "" {
+		ConsolidationSimulationDurationSeconds.Observe(time.Since(simulationStart).Seconds(), map[string]string{
 			ConsolidationTypeLabel: consolidationType,
 		})
 	}

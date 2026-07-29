@@ -53,6 +53,7 @@ func NewSingleNodeConsolidation(c consolidation, opts ...option.Function[MethodO
 // ComputeCommand generates a disruption command given candidates
 // nolint:gocyclo
 func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptionBudgetMapping map[string]int, candidates ...*Candidate) ([]Command, error) {
+	ctx = withConsolidationType(ctx, s.ConsolidationType())
 	depth := 0
 	outcome := PassOutcomeNoOp
 	defer func() {
@@ -101,9 +102,10 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 		}
 
 		// compute a possible consolidation option
-		cmd, err := s.computeConsolidation(ctx, s.ConsolidationType(), candidate)
+		cmd, err := s.computeConsolidation(ctx, candidate)
 		depth = i + 1
 		if err != nil {
+			ObserveConsolidationCandidateSkip(s.ConsolidationType(), candidate.NodePool.Name, CandidateSkipComputeError)
 			log.FromContext(ctx).Error(err, "failed computing consolidation")
 			continue
 		}

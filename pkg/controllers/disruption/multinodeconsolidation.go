@@ -50,6 +50,7 @@ func NewMultiNodeConsolidation(c consolidation, opts ...option.Function[MethodOp
 
 // nolint:gocyclo
 func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruptionBudgetMapping map[string]int, candidates ...*Candidate) ([]Command, error) {
+	ctx = withConsolidationType(ctx, m.ConsolidationType())
 	depth := len(candidates)
 	outcome := PassOutcomeNoOp
 	timedOut := false
@@ -155,7 +156,7 @@ func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, 
 		}
 
 		// Pass the timeout context to ensure sub-operations can be canceled
-		cmd, err := m.computeConsolidation(timeoutCtx, m.ConsolidationType(), candidatesToConsolidate...)
+		cmd, err := m.computeConsolidation(timeoutCtx, candidatesToConsolidate...)
 		// context deadline exceeded will return to the top of the loop and either return nothing or the last saved command
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {

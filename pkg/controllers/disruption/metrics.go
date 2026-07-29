@@ -17,11 +17,14 @@ limitations under the License.
 package disruption
 
 import (
+	"context"
 	"sort"
 	"strings"
 
 	opmetrics "github.com/awslabs/operatorpkg/metrics"
 	"github.com/prometheus/client_golang/prometheus"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
@@ -47,13 +50,14 @@ const (
 	CandidateSkipBudgetExhausted      = "budget_exhausted"
 	CandidateSkipThreshold            = "cannot_pass_threshold"
 	CandidateSkipNoOp                 = "noop_decision"
+	CandidateSkipComputeError         = "compute_error"
 	CandidateSkipPodsDidNotSchedule   = "pods_did_not_schedule"
 	CandidateSkipMultipleReplacements = "multiple_replacements_required"
 )
 
 var (
 	consolidationCandidateBuckets = []float64{1, 2, 5, 10, 25, 50, 100, 150, 200, 250, 300, 400, 500, 750, 1000}
-	durationBuckets               = []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 2, 5, 10, 30, 60}
+	durationBuckets               = []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 2, 5, 10, 30, 60, 120, 180, 300}
 )
 
 func init() {
@@ -178,7 +182,7 @@ var (
 			Namespace: metrics.Namespace,
 			Subsystem: voluntaryDisruptionSubsystem,
 			Name:      "consolidation_candidate_depth",
-			Help:      "Number of candidates evaluated in a consolidation pass. Labeled by consolidation type.",
+			Help:      "Number of candidates evaluated in a single-node consolidation pass, or the deepest batch attempted by a multi-node binary search. Labeled by consolidation type.",
 			Buckets:   consolidationCandidateBuckets,
 		},
 		[]string{ConsolidationTypeLabel},
@@ -189,7 +193,7 @@ var (
 			Namespace: metrics.Namespace,
 			Subsystem: voluntaryDisruptionSubsystem,
 			Name:      "consolidation_accepted_candidate_position",
-			Help:      "Zero-based position of the candidate that produced an accepted consolidation command.",
+			Help:      "Zero-based position of the candidate that produced an accepted consolidation command. Multi-node batches emit once per candidate NodePool, so the sample count may exceed pass count.",
 			Buckets:   consolidationCandidateBuckets,
 		},
 		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel},
@@ -205,13 +209,13 @@ var (
 		},
 		[]string{ConsolidationTypeLabel},
 	)
-	CandidateSimulationDurationSeconds = opmetrics.NewPrometheusHistogram(
+	ConsolidationSimulationDurationSeconds = opmetrics.NewPrometheusHistogram(
 		crmetrics.Registry,
 		prometheus.HistogramOpts{
 			Namespace: metrics.Namespace,
 			Subsystem: voluntaryDisruptionSubsystem,
-			Name:      "candidate_simulation_duration_seconds",
-			Help:      "Per-candidate duration spent solving a consolidation simulation, excluding scheduler construction.",
+			Name:      "consolidation_simulation_duration_seconds",
+			Help:      "Raw duration spent solving a consolidation simulation, excluding scheduler construction.",
 			Buckets:   durationBuckets,
 		},
 		[]string{ConsolidationTypeLabel},
@@ -284,8 +288,8 @@ func ObserveAcceptedCandidate(cmd Command, consolidationType string, position in
 	}
 }
 
-func ObserveRealizedSavings(cmd Command) {
-	transition := capacityTypeTransition(cmd)
+func ObserveRealizedSavings(ctx context.Context, kubeClient client.Reader, cmd Command) {
+	transition := capacityTypeTransition(ctx, kubeClient, cmd)
 	for _, candidate := range cmd.Candidates {
 		ConsolidationRealizedSavingsDollarsPerHourTotal.Add(cmd.EstimatedSavings()/float64(len(cmd.Candidates)), map[string]string{
 			metrics.NodePoolLabel:       candidate.NodePool.Name,
@@ -295,7 +299,7 @@ func ObserveRealizedSavings(cmd Command) {
 	}
 }
 
-func capacityTypeTransition(cmd Command) string {
+func capacityTypeTransition(ctx context.Context, kubeClient client.Reader, cmd Command) string {
 	sources := make([]string, 0, len(cmd.Candidates))
 	for _, candidate := range cmd.Candidates {
 		sources = append(sources, candidate.capacityType)
@@ -303,6 +307,13 @@ func capacityTypeTransition(cmd Command) string {
 	sources = uniqueSorted(sources)
 	destinations := make([]string, 0, len(cmd.Replacements))
 	for _, replacement := range cmd.Replacements {
+		nodeClaim := &v1.NodeClaim{}
+		if replacement.Name != "" && kubeClient.Get(ctx, types.NamespacedName{Name: replacement.Name}, nodeClaim) == nil {
+			if capacityType := nodeClaim.Labels[v1.CapacityTypeLabelKey]; capacityType != "" {
+				destinations = append(destinations, capacityType)
+				continue
+			}
+		}
 		if requirement := replacement.Requirements.Get(v1.CapacityTypeLabelKey); requirement != nil {
 			destinations = append(destinations, requirement.Values()...)
 		}
@@ -315,9 +326,10 @@ func capacityTypeTransition(cmd Command) string {
 }
 
 func uniqueSorted(values []string) []string {
-	sort.Strings(values)
-	result := values[:0]
-	for _, value := range values {
+	sorted := append([]string(nil), values...)
+	sort.Strings(sorted)
+	result := make([]string, 0, len(sorted))
+	for _, value := range sorted {
 		if len(result) == 0 || result[len(result)-1] != value {
 			result = append(result, value)
 		}

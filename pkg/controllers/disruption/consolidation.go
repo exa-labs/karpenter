@@ -168,10 +168,11 @@ func (c *consolidation) sortCandidates(_ context.Context, candidates []*Candidat
 // computeConsolidation computes a consolidation action to take
 //
 // nolint:gocyclo
-func (c *consolidation) computeConsolidation(ctx context.Context, consolidationType string, candidates ...*Candidate) (Command, error) {
+func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...*Candidate) (Command, error) {
+	consolidationType := consolidationTypeFromContext(ctx)
 	var err error
 	// Run scheduling simulation to compute consolidation option
-	results, err := SimulateScheduling(withConsolidationType(ctx, consolidationType), c.kubeClient, c.cluster, c.provisioner, c.clock, c.recorder, []pscheduling.Options{pscheduling.IsConsolidationSimulation}, candidates...)
+	results, err := SimulateScheduling(ctx, c.kubeClient, c.cluster, c.provisioner, c.clock, c.recorder, []pscheduling.Options{pscheduling.IsConsolidationSimulation}, candidates...)
 	if err != nil {
 		// if a candidate node is now deleting, just retry
 		if errors.Is(err, errCandidateDeleting) {
@@ -182,8 +183,12 @@ func (c *consolidation) computeConsolidation(ctx context.Context, consolidationT
 
 	// if not all of the pods were scheduled, we can't do anything
 	if !results.AllNonPendingPodsScheduled() {
-		for _, nodePool := range candidateNodePools(candidates) {
-			ObserveConsolidationCandidateSkip(consolidationType, nodePool, CandidateSkipPodsDidNotSchedule)
+		if len(candidates) == 1 {
+			ObserveConsolidationCandidateSkip(consolidationType, candidates[0].NodePool.Name, CandidateSkipPodsDidNotSchedule)
+		} else {
+			for _, nodePool := range candidateNodePools(candidates) {
+				ObserveConsolidationCandidateSkip(consolidationType, nodePool, CandidateSkipPodsDidNotSchedule)
+			}
 		}
 		// This method is used by multi-node consolidation as well, so we'll only report in the single node case
 		if len(candidates) == 1 {
@@ -203,12 +208,21 @@ func (c *consolidation) computeConsolidation(ctx context.Context, consolidationT
 
 	// we're not going to turn a single node into multiple candidates
 	if len(results.NewNodeClaims) != 1 {
-		for _, nodePool := range candidateNodePools(candidates) {
+		if len(candidates) == 1 {
+			nodePool := candidates[0].NodePool.Name
 			ObserveConsolidationCandidateSkip(consolidationType, nodePool, CandidateSkipMultipleReplacements)
 			ConsolidationRequiredReplacements.Observe(float64(len(results.NewNodeClaims)), map[string]string{
 				ConsolidationTypeLabel: consolidationType,
 				metrics.NodePoolLabel:  nodePool,
 			})
+		} else {
+			for _, nodePool := range candidateNodePools(candidates) {
+				ObserveConsolidationCandidateSkip(consolidationType, nodePool, CandidateSkipMultipleReplacements)
+				ConsolidationRequiredReplacements.Observe(float64(len(results.NewNodeClaims)), map[string]string{
+					ConsolidationTypeLabel: consolidationType,
+					metrics.NodePoolLabel:  nodePool,
+				})
+			}
 		}
 		if len(candidates) == 1 {
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Can't remove without creating %d candidates", len(results.NewNodeClaims)))...)
