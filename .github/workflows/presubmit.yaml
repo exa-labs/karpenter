@@ -23,9 +23,3 @@ jobs:
     - name: Enable the actionlint matcher
       run: echo "::add-matcher::.github/actionlint-matcher.json"
     - run: K8S_VERSION=${{ matrix.k8sVersion }} make presubmit
-    - name: Send coverage
-      # should only send converage once https://docs.coveralls.io/parallel-builds
-      if: matrix.k8sVersion == '1.36.x'
-      env:
-        COVERALLS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: go tool -modfile=go.tools.mod goveralls -coverprofile=coverage.out -service=github
