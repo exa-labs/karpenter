@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "inputs": {
+    "nixpkgs": {
+      "locked": {
+        "type": "tarball",
+        "url": "https://tarball.internal.exa.ai/github/nixos/nixpkgs/fcc13c0ba1fd8b622cebddc13887bade74dbd698.tar.gz",
+        "rev": "fcc13c0ba1fd8b622cebddc13887bade74dbd698",
+        "narHash": "sha256-3hirHZArJjxNWAZjRHlvFsXLO8ZtvY2EnIMXKmQuIck="
+      }
+    }
+  }
+}

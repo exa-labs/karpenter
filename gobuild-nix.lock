@@ -1,0 +1,377 @@
+schema = 1
+
+[cycles]
+  "github.com/prometheus/client_golang" = 1
+  "github.com/prometheus/common" = 1
+  "go.opentelemetry.io/otel" = 2
+  "go.opentelemetry.io/otel/trace" = 2
+  "golang.org/x/mod" = 0
+  "golang.org/x/net" = 0
+  "golang.org/x/text" = 0
+  "golang.org/x/tools" = 0
+
+[locked]
+  [locked."cel.dev/expr"]
+    version = "v0.24.0"
+    hash = "sha256-FVWwr/nRGV7x2YmZFgqlqnKg1kaSfxRVTGCiYhFh+0s="
+    require = ["google.golang.org/genproto/googleapis/rpc", "google.golang.org/protobuf", "github.com/google/go-cmp"]
+  [locked."github.com/Masterminds/semver/v3"]
+    version = "v3.4.0"
+    hash = "sha256-OScqgPVkKfTBuH7HumcBSdQrm6ilL0rjdkzJHpNVmb4="
+  [locked."github.com/Pallinder/go-randomdata"]
+    version = "v1.2.0"
+    hash = "sha256-CCtp5xjJijmaL8W243EhLRWwq2BivcKfIIePVI874fM="
+  [locked."github.com/antlr4-go/antlr/v4"]
+    version = "v4.13.0"
+    hash = "sha256-4ggkz4XDl/JgHt+c24adyLFFPSCxvVEEOs5lF9tvXsc="
+    require = ["golang.org/x/exp"]
+  [locked."github.com/avast/retry-go"]
+    version = "v3.0.0+incompatible"
+    hash = "sha256-qGQrWXmo0ruBsTZCwG+aw0O/K4yHVJLr2/8T+eRWUUA="
+  [locked."github.com/awslabs/operatorpkg"]
+    version = "v0.0.0-20260708223819-4da4c353c5fa"
+    hash = "sha256-UUQn/eBmUz7cahdjDubZ9Txf4JQwU2GMQbF6yISddiQ="
+    require = ["github.com/Pallinder/go-randomdata", "github.com/go-logr/logr", "github.com/go-logr/zapr", "github.com/imdario/mergo", "github.com/onsi/ginkgo/v2", "github.com/onsi/gomega", "github.com/prometheus/client_golang", "github.com/prometheus/client_model", "github.com/samber/lo", "go.uber.org/multierr", "go.uber.org/zap", "golang.org/x/time", "k8s.io/api", "k8s.io/apimachinery", "k8s.io/client-go", "k8s.io/klog/v2", "k8s.io/utils", "sigs.k8s.io/controller-runtime", "sigs.k8s.io/yaml", "github.com/Masterminds/semver/v3", "github.com/beorn7/perks", "github.com/cespare/xxhash/v2", "github.com/davecgh/go-spew", "github.com/emicklei/go-restful/v3", "github.com/evanphx/json-patch/v5", "github.com/fsnotify/fsnotify", "github.com/fxamacker/cbor/v2", "github.com/go-openapi/jsonpointer", "github.com/go-openapi/jsonreference", "github.com/go-openapi/swag", "github.com/go-task/slim-sprig/v3", "github.com/google/btree", "github.com/google/gnostic-models", "github.com/google/go-cmp", "github.com/google/pprof", "github.com/google/uuid", "github.com/json-iterator/go", "github.com/modern-go/concurrent", "github.com/modern-go/reflect2", "github.com/munnerz/goautoneg", "github.com/pmezard/go-difflib", "github.com/prometheus/common", "github.com/prometheus/procfs", "github.com/spf13/pflag", "github.com/x448/float16", "go.yaml.in/yaml/v2", "go.yaml.in/yaml/v3", "golang.org/x/mod", "golang.org/x/net", "golang.org/x/oauth2", "golang.org/x/sync", "golang.org/x/sys", "golang.org/x/term", "golang.org/x/text", "golang.org/x/tools", "gomodules.xyz/jsonpatch/v2", "google.golang.org/protobuf", "gopkg.in/evanphx/json-patch.v4", "gopkg.in/inf.v0", "k8s.io/apiextensions-apiserver", "k8s.io/kube-openapi", "sigs.k8s.io/json", "sigs.k8s.io/randfill", "sigs.k8s.io/structured-merge-diff/v6"]
+  [locked."github.com/beorn7/perks"]
+    version = "v1.0.1"
+    hash = "sha256-dRJKATFHxRNnYnhMV0al7pzS/Y2ZoFdlWW0o4pgksGE="
+  [locked."github.com/blang/semver/v4"]
+    version = "v4.0.0"
+    hash = "sha256-axd08IS48EwGHnvnjd+5qoh8RHI3DvCtj4ZbdqMPNyw="
+  [locked."github.com/cespare/xxhash/v2"]
+    version = "v2.3.0"
+    hash = "sha256-ey5EG63MckhxZhIq7Ekh+BclbAzWGqvj5KVBqDfVsZg="
+  [locked."github.com/davecgh/go-spew"]
+    version = "v1.1.2-0.20180830191138-d8f796af33cc"
+    hash = "sha256-kKabiDMgDKOOeC64wnGzP8i7J4OVBNjl3rc/GQeQB0c="
+  [locked."github.com/emicklei/go-restful/v3"]
+    version = "v3.13.0"
+    hash = "sha256-eOQvF0MNQYtlmvWwBdlejGZUkHnwXy3vybHDuZi54Uc="
+  [locked."github.com/evanphx/json-patch/v5"]
+    version = "v5.9.11"
+    hash = "sha256-Xjju6TLrSPJdqp6MQTYy4Va9QibjxRdSlWQGxyNrS8I="
+    require = ["golang.org/x/sys"]
+  [locked."github.com/fsnotify/fsnotify"]
+    version = "v1.9.0"
+    hash = "sha256-JES6JSA5GS6y9UoZy/VDJRDAoPbadSwdBA15EZ2NUH0="
+    require = ["golang.org/x/sys"]
+  [locked."github.com/fxamacker/cbor/v2"]
+    version = "v2.9.0"
+    hash = "sha256-VBZNYx+XewEGAcVaYIyiNlEdjJb2WvLYRgHQhG7cQmk="
+    require = ["github.com/x448/float16"]
+  [locked."github.com/go-logr/logr"]
+    version = "v1.4.3"
+    hash = "sha256-M4Eb+wisn96trYyKZ05YU2bi42o/IYQYgpt4peQs8PQ="
+  [locked."github.com/go-logr/zapr"]
+    version = "v1.3.0"
+    hash = "sha256-wA3CItUIfTO3rmyy1G1g+yZSEx3mi6GhhNZ+hyMbZMA="
+    require = ["github.com/go-logr/logr", "go.uber.org/zap", "github.com/davecgh/go-spew", "github.com/pmezard/go-difflib", "go.uber.org/multierr"]
+  [locked."github.com/go-openapi/jsonpointer"]
+    version = "v0.22.4"
+    hash = "sha256-Om26KHbajnu4armzTgCf26gEBkAudixE2tbXNmf8eo8="
+    require = ["github.com/go-openapi/swag/jsonname"]
+  [locked."github.com/go-openapi/jsonreference"]
+    version = "v0.21.4"
+    hash = "sha256-PBYGTe3rFpeoCI0ob7t0KLH9eXr5gHU8yFlhcPPmDcE="
+    require = ["github.com/go-openapi/jsonpointer", "github.com/go-openapi/swag/jsonname"]
+  [locked."github.com/go-openapi/swag"]
+    version = "v0.25.4"
+    hash = "sha256-+MpxwtTcCwF9ZB1SZkQRvKXBOzFv5NTIZ1UO81nlkkI="
+    require = ["github.com/go-openapi/swag/cmdutils", "github.com/go-openapi/swag/conv", "github.com/go-openapi/swag/fileutils", "github.com/go-openapi/swag/jsonname", "github.com/go-openapi/swag/jsonutils", "github.com/go-openapi/swag/loading", "github.com/go-openapi/swag/mangling", "github.com/go-openapi/swag/netutils", "github.com/go-openapi/swag/stringutils", "github.com/go-openapi/swag/typeutils", "github.com/go-openapi/swag/yamlutils", "go.yaml.in/yaml/v3"]
+  [locked."github.com/go-openapi/swag/cmdutils"]
+    version = "v0.25.4"
+    hash = "sha256-pEnKd9TsFadz233FnrmCvaPsjW+ix/IRa6M9IdJoV68="
+  [locked."github.com/go-openapi/swag/conv"]
+    version = "v0.25.4"
+    hash = "sha256-6vozlCL0JwR1u0JqahOlC7CrFWDvCqbJXF0s7prUtks="
+    require = ["github.com/go-openapi/swag/typeutils"]
+  [locked."github.com/go-openapi/swag/fileutils"]
+    version = "v0.25.4"
+    hash = "sha256-sZmGFpKWBss/47q15E+MRC63dP5kdDj98+9hjRwjlwM="
+  [locked."github.com/go-openapi/swag/jsonname"]
+    version = "v0.25.4"
+    hash = "sha256-bjYJLEuAtvokTtsmpjkiMyMDrXcYZgQIUO3F6dT/T8A="
+  [locked."github.com/go-openapi/swag/jsonutils"]
+    version = "v0.25.4"
+    hash = "sha256-fFuRXtvlUSFj7WuK/6O2J4OysRHm73Li8wKsyJ9heUU="
+    require = ["github.com/go-openapi/swag/conv", "github.com/go-openapi/swag/typeutils", "go.yaml.in/yaml/v3"]
+  [locked."github.com/go-openapi/swag/loading"]
+    version = "v0.25.4"
+    hash = "sha256-N5Be6117Q0w0qJkXwQ/0PZFKKJDu6QWantt2YIyctFU="
+    require = ["github.com/go-openapi/swag/yamlutils", "github.com/go-openapi/swag/conv", "github.com/go-openapi/swag/jsonutils", "github.com/go-openapi/swag/typeutils", "go.yaml.in/yaml/v3"]
+  [locked."github.com/go-openapi/swag/mangling"]
+    version = "v0.25.4"
+    hash = "sha256-ElXokM7HFA0dqX5OsKhIQ7zC+0wwUddbMGvW8mfFYos="
+  [locked."github.com/go-openapi/swag/netutils"]
+    version = "v0.25.4"
+    hash = "sha256-66IsT8Q8cGbZttg1Ww4GU7slRQTZYYfQZLoRxCvnH/o="
+  [locked."github.com/go-openapi/swag/stringutils"]
+    version = "v0.25.4"
+    hash = "sha256-HLhebZb55MmjSrflqsVhQAxpo9tuFSfDeTUFksgUkyg="
+  [locked."github.com/go-openapi/swag/typeutils"]
+    version = "v0.25.4"
+    hash = "sha256-CMx7YytvyU2xopP6wPAXOeGE6sGwKWnInXjbKTMFNYs="
+  [locked."github.com/go-openapi/swag/yamlutils"]
+    version = "v0.25.4"
+    hash = "sha256-PPSiENa7a3BkEJFjHjR71Jnx0JhWd8sTScVvehpv+aE="
+    require = ["github.com/go-openapi/swag/conv", "github.com/go-openapi/swag/jsonutils", "github.com/go-openapi/swag/typeutils", "go.yaml.in/yaml/v3"]
+  [locked."github.com/go-task/slim-sprig/v3"]
+    version = "v3.0.0"
+    hash = "sha256-dMY38bRJ2KwKjqvO+dA/GC6w8o3GZX9dzVPosdEDn18="
+    require = ["github.com/davecgh/go-spew", "github.com/pmezard/go-difflib"]
+  [locked."github.com/google/btree"]
+    version = "v1.1.3"
+    hash = "sha256-ne0dmYLJ1FK9urH+74AaqNyj45nHYRvXWZCQA5SUELk="
+  [locked."github.com/google/cel-go"]
+    version = "v0.26.0"
+    hash = "sha256-2CXks/Wfq33+82umaIOMLgMoWKTHrG9qt1areJGz9aI="
+    require = ["cel.dev/expr", "github.com/antlr4-go/antlr/v4", "github.com/stoewer/go-strcase", "google.golang.org/genproto/googleapis/api", "google.golang.org/protobuf", "golang.org/x/exp", "golang.org/x/text", "google.golang.org/genproto/googleapis/rpc"]
+  [locked."github.com/google/gnostic-models"]
+    version = "v0.7.1"
+    hash = "sha256-rwTWtLAoCNbEbYb7jOg+Y3QJUPwXuLkzTvkqwPrP59w="
+    require = ["go.yaml.in/yaml/v3", "google.golang.org/protobuf"]
+  [locked."github.com/google/go-cmp"]
+    version = "v0.7.0"
+    hash = "sha256-kRdunWHFN5KP7fylI4Xy964IzzqZ7KglYInmjRjZWYE="
+  [locked."github.com/google/pprof"]
+    version = "v0.0.0-20260402051712-545e8a4df936"
+    hash = "sha256-zsoxuV98roBiwXb+6WcoIEpO6EGggfnvtPvWwj9WvZ4="
+    require = ["golang.org/x/sys"]
+  [locked."github.com/google/uuid"]
+    version = "v1.6.0"
+    hash = "sha256-WiPWxVUqSL82MLkCv4JXBOoEtMs/BeM+LpouG8B+XEg="
+  [locked."github.com/gorilla/websocket"]
+    version = "v1.5.4-0.20250319132907-e064f32e3674"
+    hash = "sha256-AOkAMNC69D+Cuy3eAY1vtr9PW/NGn94yiSGu38T5H/s="
+    require = ["golang.org/x/net"]
+  [locked."github.com/imdario/mergo"]
+    version = "v0.3.16"
+    hash = "sha256-g5X05/w+86Mw9ojE1q7uXG5fvpGl2BL0Y+uuqtl/sRM="
+  [locked."github.com/inconshreveable/mousetrap"]
+    version = "v1.1.0"
+    hash = "sha256-aipwWitgsjFFxNnGPY8d1zyqoTOeCX975s0mmJ+GQws="
+  [locked."github.com/json-iterator/go"]
+    version = "v1.1.12"
+    hash = "sha256-zJqppVoQSzMzZyAsR5X6Uq4QBOdn4r1XJc2QgYuiuuI="
+    require = ["github.com/davecgh/go-spew", "github.com/modern-go/concurrent", "github.com/modern-go/reflect2"]
+  [locked."github.com/mitchellh/hashstructure/v2"]
+    version = "v2.0.2"
+    hash = "sha256-RzrRbKxFdqd19H34CxdbM21TZiE5kr6qWCWjCZlgbE0="
+  [locked."github.com/moby/spdystream"]
+    version = "v0.5.1"
+    hash = "sha256-FNDxC61ZTIkXQjwylQceX5QintKaxG8f9edpuk/TDxE="
+  [locked."github.com/modern-go/concurrent"]
+    version = "v0.0.0-20180306012644-bacd9c7ef1dd"
+    hash = "sha256-4Cf8q/woNv8EM6dUXFwDbF+zLyJCRHEE3FF5/gZIH+w="
+  [locked."github.com/modern-go/reflect2"]
+    version = "v1.0.3-0.20250322232337-35a7c28c31ee"
+    hash = "sha256-ailxRG1JuWyMpHk5XTaphWrGrBEqpzziXFlRViqOID4="
+  [locked."github.com/montanaflynn/stats"]
+    version = "v0.9.0"
+    hash = "sha256-d6K62gWVK1nJFVfePARtYvxnRf5yK2qgW0rDb+Co5ao="
+  [locked."github.com/munnerz/goautoneg"]
+    version = "v0.0.0-20191010083416-a7dc8b61c822"
+    hash = "sha256-lSrAc7IZ7AVoIkA5OIW6mmvPJpzutJccF/YFl7OvNlQ="
+  [locked."github.com/mxk/go-flowrate"]
+    version = "v0.0.0-20140419014527-cca7078d478f"
+    hash = "sha256-/1mTa24HCLPxCSQ0s+zdXzWshh64zd7gFNbgDqaf2CE="
+  [locked."github.com/onsi/ginkgo/v2"]
+    version = "v2.28.3"
+    hash = "sha256-Flc8lewL5MyAQx62yJAMViQp3hBJVuNWw2pmZ/AZ2DU="
+    require = ["github.com/Masterminds/semver/v3", "github.com/go-logr/logr", "github.com/go-task/slim-sprig/v3", "github.com/google/pprof", "github.com/onsi/gomega", "golang.org/x/sys", "golang.org/x/tools", "github.com/google/go-cmp", "go.yaml.in/yaml/v3", "golang.org/x/mod", "golang.org/x/net", "golang.org/x/sync", "golang.org/x/text", "google.golang.org/protobuf"]
+  [locked."github.com/onsi/gomega"]
+    version = "v1.40.0"
+    hash = "sha256-RjT3eKCL69yTSjsH3voCBYViBqHweZhXTtGrquggYrU="
+    require = ["github.com/google/go-cmp", "go.yaml.in/yaml/v3", "golang.org/x/net", "google.golang.org/protobuf", "golang.org/x/text"]
+  [locked."github.com/patrickmn/go-cache"]
+    version = "v2.1.0+incompatible"
+    hash = "sha256-Mb4QaTY81g/W/yHOxnJyBS3+INrim2ipApdgjysLDlk="
+  [locked."github.com/pmezard/go-difflib"]
+    version = "v1.0.0"
+    hash = "sha256-eYv1P6X3jHFwxZb3TsavUnXZqvJwjDuQYFRs5r7m2ZU="
+  [locked."github.com/prometheus/client_golang"]
+    version = "v1.23.2"
+    hash = "sha256-IC7cF40S5u/P2gJIskZecV1vtG3JQcicK7e0aRp7g4k="
+    require = ["github.com/beorn7/perks", "github.com/cespare/xxhash/v2", "github.com/google/go-cmp", "github.com/json-iterator/go", "github.com/prometheus/client_model", "github.com/prometheus/common", "github.com/prometheus/procfs", "golang.org/x/sys", "google.golang.org/protobuf", "github.com/modern-go/concurrent", "github.com/modern-go/reflect2", "github.com/munnerz/goautoneg", "go.yaml.in/yaml/v2", "golang.org/x/net", "golang.org/x/oauth2", "golang.org/x/text"]
+  [locked."github.com/prometheus/client_model"]
+    version = "v0.6.2"
+    hash = "sha256-9sm42rIXKKkORZx/8f+MX+L9RKsjV7e0Css3kPszny8="
+    require = ["google.golang.org/protobuf"]
+  [locked."github.com/prometheus/common"]
+    version = "v0.67.4"
+    hash = "sha256-QBDL52dsN/LJh2k5zAuZ0FhkqFt0PZhDdkPu9CYM75k="
+    require = ["github.com/google/go-cmp", "github.com/google/uuid", "github.com/munnerz/goautoneg", "github.com/prometheus/client_model", "go.yaml.in/yaml/v2", "golang.org/x/net", "golang.org/x/oauth2", "google.golang.org/protobuf", "github.com/beorn7/perks", "github.com/cespare/xxhash/v2", "github.com/davecgh/go-spew", "github.com/pmezard/go-difflib", "github.com/prometheus/client_golang", "github.com/prometheus/procfs", "golang.org/x/sys", "golang.org/x/text"]
+  [locked."github.com/prometheus/procfs"]
+    version = "v0.19.2"
+    hash = "sha256-Q8j/nHh5FNyi+IO9NviGU94kitLxcJjonP/NG7y1ejo="
+    require = ["github.com/google/go-cmp", "golang.org/x/sync", "golang.org/x/sys"]
+  [locked."github.com/robfig/cron/v3"]
+    version = "v3.0.1"
+    hash = "sha256-r8+Ilczge0CFcJdv/RaXoJjy41iMmrDxYiuaf4rPxZ8="
+  [locked."github.com/samber/lo"]
+    version = "v1.53.0"
+    hash = "sha256-SkL+AY4Ba3DEUs2VlQf6ZtJTQTC+ArXwuOXUhK7huuY="
+    require = ["golang.org/x/text"]
+  [locked."github.com/spf13/cobra"]
+    version = "v1.10.2"
+    hash = "sha256-1YFEEwb3lnYRLpqapOyvXrQhXOkyPsZCguKCUPUH2oo="
+    require = ["github.com/inconshreveable/mousetrap", "github.com/spf13/pflag", "go.yaml.in/yaml/v3"]
+  [locked."github.com/spf13/pflag"]
+    version = "v1.0.10"
+    hash = "sha256-mexJOH0KdJOyPfEVspXomCsf6/5wBB8zg4Jdks6fHig="
+  [locked."github.com/stoewer/go-strcase"]
+    version = "v1.3.0"
+    hash = "sha256-tpr2ovvHQQmGhOD9blxPwfTpyajqNb/jtNLc8ZS4oOE="
+  [locked."github.com/x448/float16"]
+    version = "v0.8.4"
+    hash = "sha256-VNK+zw7W52UB+Q1yTXPC4aCadKdkTNz+q9O6hqhg6/o="
+  [locked."go.opentelemetry.io/otel"]
+    version = "v1.44.0"
+    hash = "sha256-eCoQILQXr2r0FNrxdDj2cx+qjCOkSS05roqctZS2ku8="
+    require = ["github.com/cespare/xxhash/v2", "github.com/go-logr/logr", "github.com/google/go-cmp", "go.opentelemetry.io/otel/trace", "github.com/davecgh/go-spew", "github.com/pmezard/go-difflib"]
+  [locked."go.opentelemetry.io/otel/trace"]
+    version = "v1.44.0"
+    hash = "sha256-s8REnU0sbveAI4AVt9mDTRYCutUoWWcBYgdJRvudZVY="
+    require = ["github.com/google/go-cmp", "go.opentelemetry.io/otel", "github.com/cespare/xxhash/v2", "github.com/davecgh/go-spew", "github.com/pmezard/go-difflib"]
+  [locked."go.uber.org/multierr"]
+    version = "v1.11.0"
+    hash = "sha256-2K/edCquQBjThVX33fOoA8UbNJnpXIPiPeik5+tdlRA="
+    require = ["github.com/davecgh/go-spew", "github.com/pmezard/go-difflib"]
+  [locked."go.uber.org/zap"]
+    version = "v1.28.0"
+    hash = "sha256-CEKs6gM8xcuv5Wxi+rEu0UPebsLKWgQ8T5ysEzLwKmk="
+    require = ["go.uber.org/multierr", "go.yaml.in/yaml/v3", "github.com/davecgh/go-spew", "github.com/pmezard/go-difflib"]
+  [locked."go.yaml.in/yaml/v2"]
+    version = "v2.4.3"
+    hash = "sha256-u2cgKtqlYjfSiOWkpwxPT7Hm8pOniBI+oKhpgtM3l90="
+  [locked."go.yaml.in/yaml/v3"]
+    version = "v3.0.4"
+    hash = "sha256-CYMnFEirCI23hIh3vuDt7tJz0JO3GeivrUUBSHJ2/jI="
+  [locked."golang.org/x/exp"]
+    version = "v0.0.0-20240719175910-8a7402abbf56"
+    hash = "sha256-bmoZkdfsAUpME7wk333XLjuH3CYxi+pTOQsGEx1QZKw="
+    require = ["github.com/google/go-cmp", "golang.org/x/mod", "golang.org/x/tools", "golang.org/x/sync"]
+  [locked."golang.org/x/mod"]
+    version = "v0.37.0"
+    hash = "sha256-O0DcfUlenRvpkfza1QE5Oz/cmTYHpoqPe3fLyhz3XWE="
+    require = ["golang.org/x/tools"]
+  [locked."golang.org/x/net"]
+    version = "v0.56.0"
+    hash = "sha256-uuivirMTGSqpnnhY9w7Ck90Zb13f11Ku/s1va7DxS/4="
+    require = ["golang.org/x/sys", "golang.org/x/term", "golang.org/x/text"]
+  [locked."golang.org/x/oauth2"]
+    version = "v0.34.0"
+    hash = "sha256-emTHFFbPjnOiVDWOi6087TMlxRFQZoXz/QJnAyMUUVI="
+  [locked."golang.org/x/sync"]
+    version = "v0.21.0"
+    hash = "sha256-+wXK5v4KufGF4vTaIKk+DOmBp8e18KIvijKmmsv260o="
+  [locked."golang.org/x/sys"]
+    version = "v0.46.0"
+    hash = "sha256-PNse5LL5WHw/qrJV44lW1UodKO8q1FhT4y2rukGiGEM="
+  [locked."golang.org/x/term"]
+    version = "v0.44.0"
+    hash = "sha256-WGywpSaq8JbJ1wod9H2CqkQniEZ6WSx1V5zY3CdqNUM="
+    require = ["golang.org/x/sys"]
+  [locked."golang.org/x/text"]
+    version = "v0.39.0"
+    hash = "sha256-24Ml561UIG+D7D3IeSoVdoZCUN/zE0mkey90i6epLTQ="
+    require = ["golang.org/x/tools", "golang.org/x/mod", "golang.org/x/sync"]
+  [locked."golang.org/x/time"]
+    version = "v0.15.0"
+    hash = "sha256-YtPPaQ52UJVu+blvxmCPX286Y+H75OV9dgIJ22A30ys="
+  [locked."golang.org/x/tools"]
+    version = "v0.47.0"
+    hash = "sha256-qeB0Dkmd68u7iaiW+TkbPsBmGBtVmWPhrvtj2B7g/BU="
+    require = ["github.com/google/go-cmp", "golang.org/x/mod", "golang.org/x/net", "golang.org/x/sync", "golang.org/x/sys"]
+  [locked."gomodules.xyz/jsonpatch/v2"]
+    version = "v2.5.0"
+    hash = "sha256-EjaWFf5pICv7L2LbF17A4Xn7OTY8GQyGTjw27T7kPto="
+    require = ["github.com/davecgh/go-spew", "github.com/pmezard/go-difflib"]
+  [locked."google.golang.org/genproto/googleapis/api"]
+    version = "v0.0.0-20250303144028-a0af3efb3deb"
+    hash = "sha256-eO4mZ3Q9siGK1NNg2XL+HFDetTqtcBJrqb0xbUiZJYI="
+    require = ["google.golang.org/genproto/googleapis/rpc", "google.golang.org/protobuf", "golang.org/x/net", "golang.org/x/sys", "golang.org/x/text"]
+  [locked."google.golang.org/genproto/googleapis/rpc"]
+    version = "v0.0.0-20250528174236-200df99c418a"
+    hash = "sha256-UmnKgtnrSEhAiS/RZi6OeWr7OI3b+tepN+OPwTJeBac="
+    require = ["google.golang.org/protobuf", "github.com/google/go-cmp"]
+  [locked."google.golang.org/protobuf"]
+    version = "v1.36.11"
+    hash = "sha256-BwqL1eTMkGpjgQqVrydA/mBpHjyfUMwj3yKgj2wYf/E="
+    require = ["github.com/google/go-cmp"]
+  [locked."gopkg.in/evanphx/json-patch.v4"]
+    version = "v4.13.0"
+    hash = "sha256-fCYqJfbzTBxdHVUF67t/K3uHFymmLC+Bktj3YPVOvog="
+  [locked."gopkg.in/inf.v0"]
+    version = "v0.9.1"
+    hash = "sha256-arQoOh4zGfstajvF4031kYOJ8AJARHcdnng4ioSmoMg="
+  [locked."k8s.io/api"]
+    version = "v0.35.1"
+    hash = "sha256-eIDkltw9s7+gNK8tjg45GMPv9zz0+XIZejwN+WSinqU="
+    require = ["k8s.io/apimachinery", "k8s.io/klog/v2", "github.com/davecgh/go-spew", "github.com/fxamacker/cbor/v2", "github.com/go-logr/logr", "github.com/google/go-cmp", "github.com/json-iterator/go", "github.com/modern-go/concurrent", "github.com/modern-go/reflect2", "github.com/spf13/pflag", "github.com/x448/float16", "go.yaml.in/yaml/v2", "golang.org/x/net", "golang.org/x/text", "gopkg.in/inf.v0", "k8s.io/kube-openapi", "k8s.io/utils", "sigs.k8s.io/json", "sigs.k8s.io/randfill", "sigs.k8s.io/structured-merge-diff/v6", "sigs.k8s.io/yaml"]
+  [locked."k8s.io/apiextensions-apiserver"]
+    version = "v0.35.0"
+    hash = "sha256-ovXo1r7XJ+V0r8koVUMukLGDFgDP++RsJg0fBgzQ3GA="
+    require = ["github.com/emicklei/go-restful/v3", "github.com/fxamacker/cbor/v2", "github.com/google/cel-go", "github.com/google/gnostic-models", "github.com/google/go-cmp", "github.com/google/uuid", "github.com/spf13/cobra", "github.com/spf13/pflag", "go.opentelemetry.io/otel", "go.opentelemetry.io/otel/trace", "go.yaml.in/yaml/v2", "golang.org/x/sync", "golang.org/x/text", "google.golang.org/protobuf", "gopkg.in/evanphx/json-patch.v4", "k8s.io/api", "k8s.io/apimachinery", "k8s.io/apiserver", "k8s.io/client-go", "k8s.io/component-base", "k8s.io/klog/v2", "k8s.io/kube-openapi", "k8s.io/utils", "sigs.k8s.io/json", "sigs.k8s.io/randfill", "sigs.k8s.io/structured-merge-diff/v6", "sigs.k8s.io/yaml", "cel.dev/expr", "github.com/antlr4-go/antlr/v4", "github.com/beorn7/perks", "github.com/blang/semver/v4", "github.com/cespare/xxhash/v2", "github.com/davecgh/go-spew", "github.com/fsnotify/fsnotify", "github.com/go-logr/logr", "github.com/go-openapi/jsonpointer", "github.com/go-openapi/jsonreference", "github.com/go-openapi/swag", "github.com/google/btree", "github.com/gorilla/websocket", "github.com/inconshreveable/mousetrap", "github.com/json-iterator/go", "github.com/moby/spdystream", "github.com/modern-go/concurrent", "github.com/modern-go/reflect2", "github.com/munnerz/goautoneg", "github.com/mxk/go-flowrate", "github.com/pmezard/go-difflib", "github.com/prometheus/client_golang", "github.com/prometheus/client_model", "github.com/prometheus/common", "github.com/prometheus/procfs", "github.com/stoewer/go-strcase", "github.com/x448/float16", "go.uber.org/multierr", "go.uber.org/zap", "go.yaml.in/yaml/v3", "golang.org/x/exp", "golang.org/x/mod", "golang.org/x/net", "golang.org/x/oauth2", "golang.org/x/sys", "golang.org/x/term", "golang.org/x/time", "golang.org/x/tools", "google.golang.org/genproto/googleapis/api", "google.golang.org/genproto/googleapis/rpc", "gopkg.in/inf.v0"]
+  [locked."k8s.io/apimachinery"]
+    version = "v0.35.1"
+    hash = "sha256-v6qZ5TBNUiFYeiRs1D8H2zgStMO9aZuD34CILT+8YRc="
+    require = ["github.com/davecgh/go-spew", "github.com/fxamacker/cbor/v2", "github.com/google/gnostic-models", "github.com/google/go-cmp", "github.com/google/uuid", "github.com/moby/spdystream", "github.com/mxk/go-flowrate", "github.com/pmezard/go-difflib", "github.com/spf13/pflag", "golang.org/x/net", "golang.org/x/time", "gopkg.in/evanphx/json-patch.v4", "gopkg.in/inf.v0", "k8s.io/klog/v2", "k8s.io/kube-openapi", "k8s.io/utils", "sigs.k8s.io/json", "sigs.k8s.io/randfill", "sigs.k8s.io/structured-merge-diff/v6", "sigs.k8s.io/yaml", "github.com/go-logr/logr", "github.com/go-openapi/jsonpointer", "github.com/go-openapi/jsonreference", "github.com/go-openapi/swag", "github.com/json-iterator/go", "github.com/modern-go/concurrent", "github.com/modern-go/reflect2", "github.com/onsi/ginkgo/v2", "github.com/onsi/gomega", "github.com/x448/float16", "go.yaml.in/yaml/v2", "go.yaml.in/yaml/v3", "golang.org/x/text", "google.golang.org/protobuf"]
+  [locked."k8s.io/apiserver"]
+    version = "v0.35.0"
+    hash = "sha256-+W5L7xXwFBtlpaAcWAFPCc5nmFZrxAsqjr/e9GKRY/8="
+    require = ["github.com/blang/semver/v4", "github.com/emicklei/go-restful/v3", "github.com/fsnotify/fsnotify", "github.com/go-logr/logr", "github.com/google/btree", "github.com/google/cel-go", "github.com/google/gnostic-models", "github.com/google/go-cmp", "github.com/google/uuid", "github.com/gorilla/websocket", "github.com/munnerz/goautoneg", "github.com/mxk/go-flowrate", "github.com/spf13/pflag", "go.opentelemetry.io/otel", "go.opentelemetry.io/otel/trace", "go.uber.org/zap", "golang.org/x/net", "golang.org/x/sync", "golang.org/x/sys", "golang.org/x/text", "golang.org/x/time", "google.golang.org/genproto/googleapis/api", "google.golang.org/protobuf", "gopkg.in/evanphx/json-patch.v4", "k8s.io/api", "k8s.io/apimachinery", "k8s.io/client-go", "k8s.io/component-base", "k8s.io/klog/v2", "k8s.io/kube-openapi", "k8s.io/utils", "sigs.k8s.io/json", "sigs.k8s.io/randfill", "sigs.k8s.io/structured-merge-diff/v6", "sigs.k8s.io/yaml", "cel.dev/expr", "github.com/antlr4-go/antlr/v4", "github.com/beorn7/perks", "github.com/cespare/xxhash/v2", "github.com/davecgh/go-spew", "github.com/fxamacker/cbor/v2", "github.com/go-openapi/jsonpointer", "github.com/go-openapi/jsonreference", "github.com/go-openapi/swag", "github.com/inconshreveable/mousetrap", "github.com/json-iterator/go", "github.com/moby/spdystream", "github.com/modern-go/concurrent", "github.com/modern-go/reflect2", "github.com/pmezard/go-difflib", "github.com/prometheus/client_golang", "github.com/prometheus/client_model", "github.com/prometheus/common", "github.com/prometheus/procfs", "github.com/spf13/cobra", "github.com/stoewer/go-strcase", "github.com/x448/float16", "go.uber.org/multierr", "go.yaml.in/yaml/v2", "go.yaml.in/yaml/v3", "golang.org/x/exp", "golang.org/x/oauth2", "golang.org/x/term", "google.golang.org/genproto/googleapis/rpc", "gopkg.in/inf.v0"]
+  [locked."k8s.io/client-go"]
+    version = "v0.35.1"
+    hash = "sha256-4IBpJE2qdXXXeLhCcMp64ss6eXN7mgZE6xaywq7H9nE="
+    require = ["github.com/go-logr/logr", "github.com/google/gnostic-models", "github.com/google/go-cmp", "github.com/google/uuid", "github.com/gorilla/websocket", "github.com/munnerz/goautoneg", "github.com/spf13/pflag", "golang.org/x/net", "golang.org/x/oauth2", "golang.org/x/term", "golang.org/x/time", "google.golang.org/protobuf", "gopkg.in/evanphx/json-patch.v4", "k8s.io/api", "k8s.io/apimachinery", "k8s.io/klog/v2", "k8s.io/kube-openapi", "k8s.io/utils", "sigs.k8s.io/json", "sigs.k8s.io/randfill", "sigs.k8s.io/structured-merge-diff/v6", "sigs.k8s.io/yaml", "github.com/Masterminds/semver/v3", "github.com/davecgh/go-spew", "github.com/emicklei/go-restful/v3", "github.com/fxamacker/cbor/v2", "github.com/go-openapi/jsonpointer", "github.com/go-openapi/jsonreference", "github.com/go-openapi/swag", "github.com/google/btree", "github.com/google/pprof", "github.com/json-iterator/go", "github.com/moby/spdystream", "github.com/modern-go/concurrent", "github.com/modern-go/reflect2", "github.com/mxk/go-flowrate", "github.com/pmezard/go-difflib", "github.com/x448/float16", "go.yaml.in/yaml/v2", "go.yaml.in/yaml/v3", "golang.org/x/sys", "golang.org/x/text", "gopkg.in/inf.v0"]
+  [locked."k8s.io/cloud-provider"]
+    version = "v0.35.0"
+    hash = "sha256-Ayqqw7hw18eZqYXfI40ALVmI/FJrOO05zMjw17lZQ+g="
+    require = ["github.com/google/go-cmp", "github.com/spf13/cobra", "github.com/spf13/pflag", "golang.org/x/time", "k8s.io/api", "k8s.io/apimachinery", "k8s.io/apiserver", "k8s.io/client-go", "k8s.io/component-base", "k8s.io/component-helpers", "k8s.io/klog/v2", "k8s.io/utils", "cel.dev/expr", "github.com/antlr4-go/antlr/v4", "github.com/beorn7/perks", "github.com/blang/semver/v4", "github.com/cespare/xxhash/v2", "github.com/davecgh/go-spew", "github.com/emicklei/go-restful/v3", "github.com/fsnotify/fsnotify", "github.com/fxamacker/cbor/v2", "github.com/go-logr/logr", "github.com/go-logr/zapr", "github.com/go-openapi/jsonpointer", "github.com/go-openapi/jsonreference", "github.com/go-openapi/swag", "github.com/google/btree", "github.com/google/cel-go", "github.com/google/gnostic-models", "github.com/google/uuid", "github.com/inconshreveable/mousetrap", "github.com/json-iterator/go", "github.com/modern-go/concurrent", "github.com/modern-go/reflect2", "github.com/munnerz/goautoneg", "github.com/pmezard/go-difflib", "github.com/prometheus/client_golang", "github.com/prometheus/client_model", "github.com/prometheus/common", "github.com/prometheus/procfs", "github.com/stoewer/go-strcase", "github.com/x448/float16", "go.opentelemetry.io/otel", "go.opentelemetry.io/otel/trace", "go.uber.org/multierr", "go.uber.org/zap", "go.yaml.in/yaml/v2", "go.yaml.in/yaml/v3", "golang.org/x/exp", "golang.org/x/net", "golang.org/x/oauth2", "golang.org/x/sync", "golang.org/x/sys", "golang.org/x/term", "golang.org/x/text", "google.golang.org/genproto/googleapis/api", "google.golang.org/genproto/googleapis/rpc", "google.golang.org/protobuf", "gopkg.in/evanphx/json-patch.v4", "gopkg.in/inf.v0", "k8s.io/kube-openapi", "sigs.k8s.io/json", "sigs.k8s.io/randfill", "sigs.k8s.io/structured-merge-diff/v6", "sigs.k8s.io/yaml"]
+  [locked."k8s.io/component-base"]
+    version = "v0.35.0"
+    hash = "sha256-OtfhUVsv+viloDgPJlZ9Q86B3gk84cLU61OkAzMyD0U="
+    require = ["github.com/blang/semver/v4", "github.com/go-logr/logr", "github.com/go-logr/zapr", "github.com/google/go-cmp", "github.com/prometheus/client_golang", "github.com/prometheus/client_model", "github.com/prometheus/common", "github.com/prometheus/procfs", "github.com/spf13/cobra", "github.com/spf13/pflag", "go.opentelemetry.io/otel", "go.opentelemetry.io/otel/trace", "go.uber.org/zap", "go.yaml.in/yaml/v2", "golang.org/x/sys", "golang.org/x/text", "k8s.io/apimachinery", "k8s.io/client-go", "k8s.io/klog/v2", "k8s.io/utils", "sigs.k8s.io/json", "github.com/beorn7/perks", "github.com/cespare/xxhash/v2", "github.com/davecgh/go-spew", "github.com/emicklei/go-restful/v3", "github.com/fxamacker/cbor/v2", "github.com/go-openapi/jsonpointer", "github.com/go-openapi/jsonreference", "github.com/go-openapi/swag", "github.com/google/gnostic-models", "github.com/google/uuid", "github.com/inconshreveable/mousetrap", "github.com/json-iterator/go", "github.com/modern-go/concurrent", "github.com/modern-go/reflect2", "github.com/munnerz/goautoneg", "github.com/pmezard/go-difflib", "github.com/x448/float16", "go.uber.org/multierr", "go.yaml.in/yaml/v3", "golang.org/x/net", "golang.org/x/oauth2", "golang.org/x/term", "golang.org/x/time", "google.golang.org/genproto/googleapis/api", "google.golang.org/genproto/googleapis/rpc", "google.golang.org/protobuf", "gopkg.in/evanphx/json-patch.v4", "gopkg.in/inf.v0", "k8s.io/api", "k8s.io/kube-openapi", "sigs.k8s.io/randfill", "sigs.k8s.io/structured-merge-diff/v6", "sigs.k8s.io/yaml"]
+  [locked."k8s.io/component-helpers"]
+    version = "v0.35.0"
+    hash = "sha256-TQdZ3YYd3Mn+JOBOnuyJWdKlRWLSewDQrBbHctpy/p4="
+    require = ["github.com/google/go-cmp", "k8s.io/api", "k8s.io/apimachinery", "k8s.io/client-go", "k8s.io/klog/v2", "k8s.io/utils", "github.com/davecgh/go-spew", "github.com/emicklei/go-restful/v3", "github.com/fxamacker/cbor/v2", "github.com/go-logr/logr", "github.com/go-openapi/jsonpointer", "github.com/go-openapi/jsonreference", "github.com/go-openapi/swag", "github.com/google/gnostic-models", "github.com/google/uuid", "github.com/json-iterator/go", "github.com/modern-go/concurrent", "github.com/modern-go/reflect2", "github.com/munnerz/goautoneg", "github.com/pmezard/go-difflib", "github.com/x448/float16", "go.yaml.in/yaml/v2", "go.yaml.in/yaml/v3", "golang.org/x/net", "golang.org/x/oauth2", "golang.org/x/sys", "golang.org/x/term", "golang.org/x/text", "golang.org/x/time", "google.golang.org/protobuf", "gopkg.in/evanphx/json-patch.v4", "gopkg.in/inf.v0", "k8s.io/kube-openapi", "sigs.k8s.io/json", "sigs.k8s.io/randfill", "sigs.k8s.io/structured-merge-diff/v6", "sigs.k8s.io/yaml"]
+  [locked."k8s.io/csi-translation-lib"]
+    version = "v0.35.0"
+    hash = "sha256-9zq4pZNtWmJLDx451siYafALoTEvBzIGsPmw/kEM+I8="
+    require = ["k8s.io/api", "k8s.io/apimachinery", "k8s.io/klog/v2", "github.com/davecgh/go-spew", "github.com/fxamacker/cbor/v2", "github.com/go-logr/logr", "github.com/google/uuid", "github.com/json-iterator/go", "github.com/modern-go/concurrent", "github.com/modern-go/reflect2", "github.com/pmezard/go-difflib", "github.com/x448/float16", "go.yaml.in/yaml/v2", "golang.org/x/net", "golang.org/x/text", "gopkg.in/inf.v0", "k8s.io/kube-openapi", "k8s.io/utils", "sigs.k8s.io/json", "sigs.k8s.io/randfill", "sigs.k8s.io/structured-merge-diff/v6"]
+  [locked."k8s.io/dynamic-resource-allocation"]
+    version = "v0.35.0"
+    hash = "sha256-27Xbz5O6EvuZwgx3B3ILrWYCAyfTdg3j0caeiU2NBGA="
+    require = ["github.com/blang/semver/v4", "github.com/google/cel-go", "github.com/google/go-cmp", "github.com/onsi/gomega", "k8s.io/api", "k8s.io/apimachinery", "k8s.io/apiserver", "k8s.io/client-go", "k8s.io/component-helpers", "k8s.io/klog/v2", "k8s.io/utils", "cel.dev/expr", "github.com/antlr4-go/antlr/v4", "github.com/beorn7/perks", "github.com/cespare/xxhash/v2", "github.com/davecgh/go-spew", "github.com/emicklei/go-restful/v3", "github.com/fxamacker/cbor/v2", "github.com/go-logr/logr", "github.com/go-openapi/jsonpointer", "github.com/go-openapi/jsonreference", "github.com/go-openapi/swag", "github.com/google/gnostic-models", "github.com/google/uuid", "github.com/inconshreveable/mousetrap", "github.com/json-iterator/go", "github.com/modern-go/concurrent", "github.com/modern-go/reflect2", "github.com/munnerz/goautoneg", "github.com/pmezard/go-difflib", "github.com/prometheus/client_golang", "github.com/prometheus/client_model", "github.com/prometheus/common", "github.com/prometheus/procfs", "github.com/spf13/cobra", "github.com/spf13/pflag", "github.com/stoewer/go-strcase", "github.com/x448/float16", "go.opentelemetry.io/otel", "go.opentelemetry.io/otel/trace", "go.uber.org/multierr", "go.uber.org/zap", "go.yaml.in/yaml/v2", "go.yaml.in/yaml/v3", "golang.org/x/exp", "golang.org/x/net", "golang.org/x/oauth2", "golang.org/x/sync", "golang.org/x/sys", "golang.org/x/term", "golang.org/x/text", "golang.org/x/time", "google.golang.org/genproto/googleapis/api", "google.golang.org/genproto/googleapis/rpc", "google.golang.org/protobuf", "gopkg.in/evanphx/json-patch.v4", "gopkg.in/inf.v0", "k8s.io/component-base", "k8s.io/kube-openapi", "sigs.k8s.io/json", "sigs.k8s.io/randfill", "sigs.k8s.io/structured-merge-diff/v6", "sigs.k8s.io/yaml"]
+  [locked."k8s.io/klog/v2"]
+    version = "v2.130.1"
+    hash = "sha256-z/A4koZ7OAfMzbxXF55seCUZInNxzwTmvomH6ZDWrTo="
+    require = ["github.com/go-logr/logr"]
+  [locked."k8s.io/kube-openapi"]
+    version = "v0.0.0-20251125145642-4e65d59e963e"
+    hash = "sha256-SjJx8cdBeVnEn7kGSjrGsthDRSk7iT19rB4+9xE8CTQ="
+    require = ["github.com/emicklei/go-restful/v3", "github.com/go-openapi/jsonreference", "github.com/go-openapi/swag", "github.com/google/gnostic-models", "github.com/google/go-cmp", "github.com/google/uuid", "github.com/munnerz/goautoneg", "github.com/onsi/ginkgo/v2", "github.com/onsi/gomega", "github.com/spf13/pflag", "go.yaml.in/yaml/v2", "go.yaml.in/yaml/v3", "golang.org/x/tools", "google.golang.org/protobuf", "k8s.io/klog/v2", "k8s.io/utils", "sigs.k8s.io/json", "sigs.k8s.io/randfill", "sigs.k8s.io/structured-merge-diff/v6", "sigs.k8s.io/yaml", "github.com/davecgh/go-spew", "github.com/go-logr/logr", "github.com/go-openapi/jsonpointer", "github.com/go-task/slim-sprig/v3", "github.com/google/pprof", "github.com/json-iterator/go", "github.com/modern-go/concurrent", "github.com/modern-go/reflect2", "github.com/pmezard/go-difflib", "golang.org/x/mod", "golang.org/x/net", "golang.org/x/sync", "golang.org/x/sys", "golang.org/x/text"]
+  [locked."k8s.io/utils"]
+    version = "v0.0.0-20251222233032-718f0e51e6d2"
+    hash = "sha256-/HzSSp/flxhMSyK8vRUTOQj9LasqebUAOdWbjZNKgB4="
+    require = ["github.com/davecgh/go-spew", "k8s.io/klog/v2", "github.com/go-logr/logr"]
+  [locked."sigs.k8s.io/controller-runtime"]
+    version = "v0.23.1"
+    hash = "sha256-0ilxWzV2t8FCyZUXE0e5rQBeoc9w6crZdbNs/8lw+Bw="
+    require = ["github.com/evanphx/json-patch/v5", "github.com/fsnotify/fsnotify", "github.com/go-logr/logr", "github.com/go-logr/zapr", "github.com/google/btree", "github.com/google/go-cmp", "github.com/onsi/ginkgo/v2", "github.com/onsi/gomega", "github.com/prometheus/client_golang", "github.com/prometheus/client_model", "go.uber.org/zap", "golang.org/x/mod", "golang.org/x/sync", "golang.org/x/sys", "gomodules.xyz/jsonpatch/v2", "gopkg.in/evanphx/json-patch.v4", "k8s.io/api", "k8s.io/apiextensions-apiserver", "k8s.io/apimachinery", "k8s.io/apiserver", "k8s.io/client-go", "k8s.io/klog/v2", "k8s.io/utils", "sigs.k8s.io/structured-merge-diff/v6", "sigs.k8s.io/yaml", "cel.dev/expr", "github.com/Masterminds/semver/v3", "github.com/antlr4-go/antlr/v4", "github.com/beorn7/perks", "github.com/blang/semver/v4", "github.com/cespare/xxhash/v2", "github.com/davecgh/go-spew", "github.com/emicklei/go-restful/v3", "github.com/fxamacker/cbor/v2", "github.com/go-openapi/jsonpointer", "github.com/go-openapi/jsonreference", "github.com/go-openapi/swag", "github.com/go-task/slim-sprig/v3", "github.com/google/cel-go", "github.com/google/gnostic-models", "github.com/google/pprof", "github.com/google/uuid", "github.com/inconshreveable/mousetrap", "github.com/json-iterator/go", "github.com/modern-go/concurrent", "github.com/modern-go/reflect2", "github.com/munnerz/goautoneg", "github.com/pmezard/go-difflib", "github.com/prometheus/common", "github.com/prometheus/procfs", "github.com/spf13/cobra", "github.com/spf13/pflag", "github.com/stoewer/go-strcase", "github.com/x448/float16", "go.opentelemetry.io/otel", "go.opentelemetry.io/otel/trace", "go.uber.org/multierr", "go.yaml.in/yaml/v2", "go.yaml.in/yaml/v3", "golang.org/x/exp", "golang.org/x/net", "golang.org/x/oauth2", "golang.org/x/term", "golang.org/x/text", "golang.org/x/time", "golang.org/x/tools", "google.golang.org/genproto/googleapis/api", "google.golang.org/genproto/googleapis/rpc", "google.golang.org/protobuf", "gopkg.in/inf.v0", "k8s.io/component-base", "k8s.io/kube-openapi", "sigs.k8s.io/json", "sigs.k8s.io/randfill"]
+  [locked."sigs.k8s.io/json"]
+    version = "v0.0.0-20250730193827-2d320260d730"
+    hash = "sha256-HJNgLaU41Ze+3GQXi/qZav3gkvxhqrdItSPVuKMGPd0="
+  [locked."sigs.k8s.io/randfill"]
+    version = "v1.0.0"
+    hash = "sha256-Q1QRsfB22wacYjWIcummrqUsFTk2ON9MQeZCzhGlzqE="
+  [locked."sigs.k8s.io/structured-merge-diff/v6"]
+    version = "v6.3.2-0.20260122202528-d9cc6641c482"
+    hash = "sha256-ICigRWBeP/zmX6868BQ9ekWS+9A4QdoJEB1rxsmoOvY="
+    require = ["github.com/google/go-cmp", "github.com/json-iterator/go", "go.yaml.in/yaml/v2", "sigs.k8s.io/randfill", "github.com/modern-go/concurrent", "github.com/modern-go/reflect2"]
+  [locked."sigs.k8s.io/yaml"]
+    version = "v1.6.0"
+    hash = "sha256-U+Bj6+bh+GvK9iNMhMVoP2L/Icxsd7vMUylJ6OFqoC0="
+    require = ["github.com/google/go-cmp", "go.yaml.in/yaml/v2", "go.yaml.in/yaml/v3", "sigs.k8s.io/randfill"]
