@@ -110,7 +110,6 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 			continue
 		}
 		if cmd.Decision() == NoOpDecision {
-			ObserveConsolidationCandidateSkip(s.ConsolidationType(), candidate.NodePool.Name, CandidateSkipNoOp)
 			continue
 		}
 		// Score the move: Balanced pools may reject; other policies pass through.

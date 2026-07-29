@@ -51,11 +51,13 @@ func NewMultiNodeConsolidation(c consolidation, opts ...option.Function[MethodOp
 // nolint:gocyclo
 func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruptionBudgetMapping map[string]int, candidates ...*Candidate) ([]Command, error) {
 	ctx = withConsolidationType(ctx, m.ConsolidationType())
-	depth := len(candidates)
+	// Depth is the deepest batch actually attempted, so passes that do not
+	// reach simulation (for example, budget-constrained passes) report zero.
+	depth := 0
 	outcome := PassOutcomeNoOp
 	timedOut := false
 	defer func() {
-		if timedOut {
+		if timedOut && outcome == PassOutcomeNoOp {
 			outcome = PassOutcomeTimedOut
 		}
 		ObserveConsolidationPass(m.ConsolidationType(), outcome, depth)
@@ -171,11 +173,6 @@ func (m *MultiNodeConsolidation) firstNConsolidationOption(ctx context.Context, 
 
 			}
 			return Command{}, nil, err
-		}
-		if cmd.Decision() == NoOpDecision {
-			for _, candidate := range candidatesToConsolidate {
-				ObserveConsolidationCandidateSkip(m.ConsolidationType(), candidate.NodePool.Name, CandidateSkipNoOp)
-			}
 		}
 		// ensure that the action is sensical for replacements, see explanation on filterOutSameType for why this is
 		// required
