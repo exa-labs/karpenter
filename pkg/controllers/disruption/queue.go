@@ -174,7 +174,11 @@ func (q *Queue) Reconcile(ctx context.Context, nodeClaim *v1.NodeClaim) (reconci
 		log.FromContext(ctx).Error(multiErr, "failed terminating nodes while executing a disruption command")
 	} else {
 		log.FromContext(ctx).V(1).Info("command succeeded")
+		alreadySucceeded := cmd.Succeeded
 		cmd.Succeeded = true
+		if !alreadySucceeded && (cmd.ConsolidationType() == SingleNodeConsolidationType || cmd.ConsolidationType() == MultiNodeConsolidationType) {
+			ObserveRealizedSavings(ctx, q.kubeClient, *cmd)
+		}
 	}
 	q.CompleteCommand(cmd)
 	return reconcile.Result{}, nil

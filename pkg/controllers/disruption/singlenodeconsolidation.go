@@ -53,6 +53,12 @@ func NewSingleNodeConsolidation(c consolidation, opts ...option.Function[MethodO
 // ComputeCommand generates a disruption command given candidates
 // nolint:gocyclo
 func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptionBudgetMapping map[string]int, candidates ...*Candidate) ([]Command, error) {
+	ctx = withConsolidationType(ctx, s.ConsolidationType())
+	depth := 0
+	outcome := PassOutcomeNoOp
+	defer func() {
+		ObserveConsolidationPass(s.ConsolidationType(), outcome, depth)
+	}()
 	if s.IsConsolidated() {
 		return []Command{}, nil
 	}
@@ -66,6 +72,8 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 
 	for i, candidate := range candidates {
 		if s.clock.Now().After(timeout) {
+			outcome = PassOutcomeTimedOut
+			depth = i
 			ConsolidationTimeoutsTotal.Inc(map[string]string{ConsolidationTypeLabel: s.ConsolidationType()})
 			log.FromContext(ctx).V(1).Info("abandoning single-node consolidation due to timeout", "candidates_evaluated", i)
 
@@ -81,17 +89,23 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 		// counter since single node consolidation commands can only have one candidate.
 		if disruptionBudgetMapping[candidate.NodePool.Name] == 0 {
 			constrainedByBudgets = true
+			ObserveConsolidationCandidateSkip(s.ConsolidationType(), candidate.NodePool.Name, CandidateSkipBudgetExhausted)
+			depth = i + 1
 			continue
 		}
 		// Skip candidates whose best-case score (delete ratio) cannot pass the
 		// threshold. A DELETE is the upper bound; if it fails, no REPLACE will pass.
 		if !s.evaluator.CanPassThreshold(candidate) {
+			ObserveConsolidationCandidateSkip(s.ConsolidationType(), candidate.NodePool.Name, CandidateSkipThreshold)
+			depth = i + 1
 			continue
 		}
 
 		// compute a possible consolidation option
 		cmd, err := s.computeConsolidation(ctx, candidate)
+		depth = i + 1
 		if err != nil {
+			ObserveConsolidationCandidateSkip(s.ConsolidationType(), candidate.NodePool.Name, CandidateSkipComputeError)
 			log.FromContext(ctx).Error(err, "failed computing consolidation")
 			continue
 		}
@@ -100,6 +114,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 		}
 		// Score the move: Balanced pools may reject; other policies pass through.
 		if approved, _ := s.evaluator.ApproveCommand(ctx, cmd); !approved {
+			ObserveConsolidationCandidateSkip(s.ConsolidationType(), candidate.NodePool.Name, CandidateSkipApprovalRejected)
 			continue
 		}
 		if _, err = s.validator.Validate(ctx, cmd, commandValidationDelay); err != nil {
@@ -110,6 +125,8 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 			}
 			return []Command{}, fmt.Errorf("validating consolidation, %w", err)
 		}
+		outcome = PassOutcomeCompleted
+		ObserveAcceptedCandidate(cmd, s.ConsolidationType(), i)
 		return []Command{cmd}, nil
 	}
 
@@ -122,6 +139,9 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 
 	s.PreviouslyUnseenNodePools = unseenNodePools
 
+	if constrainedByBudgets {
+		outcome = PassOutcomeBudgetConstrained
+	}
 	return []Command{}, nil
 }
 

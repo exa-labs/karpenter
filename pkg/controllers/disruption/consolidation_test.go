@@ -1554,7 +1554,21 @@ var _ = Describe("Consolidation", func() {
 			ExpectManualBinding(ctx, env.Client, pods[2], nodes[2])
 			ExpectManualBinding(ctx, env.Client, pods[3], nodes[2])
 			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, nodes, nodeClaims)
+			var depthBefore uint64
+			var depthSumBefore float64
+			if metric, found := FindMetricWithLabelValues("karpenter_voluntary_disruption_consolidation_candidate_depth", map[string]string{
+				"consolidation_type": "multi",
+			}); found {
+				depthBefore = metric.Histogram.GetSampleCount()
+				depthSumBefore = metric.Histogram.GetSampleSum()
+			}
 			ExpectSingletonReconciled(ctx, disruptionController)
+			metric, found := FindMetricWithLabelValues("karpenter_voluntary_disruption_consolidation_candidate_depth", map[string]string{
+				"consolidation_type": "multi",
+			})
+			Expect(found).To(BeTrue())
+			Expect(metric.Histogram.GetSampleCount() - depthBefore).To(Equal(uint64(1)))
+			Expect(metric.Histogram.GetSampleSum() - depthSumBefore).To(Equal(float64(2)))
 			// Process the item so that the nodes can be deleted.
 			cmds := queue.GetCommands()
 			Expect(cmds).To(HaveLen(1))
@@ -4392,6 +4406,16 @@ var _ = Describe("Consolidation", func() {
 				Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(2))
 				// and delete node3 in single nodeclaim consolidation
 				ExpectNotFound(ctx, env.Client, nodeClaims[2], nodes[2])
+				_, found := FindMetricWithLabelValues("karpenter_voluntary_disruption_consolidation_candidate_skips_total", map[string]string{
+					"consolidation_type":  "single",
+					metrics.NodePoolLabel: nodePool.Name,
+				})
+				Expect(found).To(BeFalse())
+				_, found = FindMetricWithLabelValues("karpenter_voluntary_disruption_consolidation_accepted_candidate_position", map[string]string{
+					"consolidation_type":  "single",
+					metrics.NodePoolLabel: nodePool.Name,
+				})
+				Expect(found).To(BeTrue())
 			},
 			Entry("if the candidate is on-demand node", false),
 			Entry("if the candidate is spot node", true),

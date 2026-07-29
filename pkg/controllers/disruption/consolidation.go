@@ -37,9 +37,21 @@ import (
 	pscheduling "sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	"sigs.k8s.io/karpenter/pkg/events"
+	"sigs.k8s.io/karpenter/pkg/metrics"
 	"sigs.k8s.io/karpenter/pkg/operator/options"
 	"sigs.k8s.io/karpenter/pkg/scheduling"
 )
+
+type consolidationTypeContextKey struct{}
+
+func withConsolidationType(ctx context.Context, consolidationType string) context.Context {
+	return context.WithValue(ctx, consolidationTypeContextKey{}, consolidationType)
+}
+
+func consolidationTypeFromContext(ctx context.Context) string {
+	consolidationType, _ := ctx.Value(consolidationTypeContextKey{}).(string)
+	return consolidationType
+}
 
 // commandValidationDelay is the time we wait between creating a consolidation command and validating that it still works.
 const commandValidationDelay = 15 * time.Second
@@ -157,6 +169,12 @@ func (c *consolidation) sortCandidates(_ context.Context, candidates []*Candidat
 //
 // nolint:gocyclo
 func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...*Candidate) (Command, error) {
+	consolidationType := consolidationTypeFromContext(ctx)
+	observeSingleNodeSkip := func(reason string) {
+		if len(candidates) == 1 {
+			ObserveConsolidationCandidateSkip(consolidationType, candidates[0].NodePool.Name, reason)
+		}
+	}
 	var err error
 	// Run scheduling simulation to compute consolidation option
 	results, err := SimulateScheduling(ctx, c.kubeClient, c.cluster, c.provisioner, c.clock, c.recorder, []pscheduling.Options{pscheduling.IsConsolidationSimulation}, candidates...)
@@ -170,6 +188,7 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 
 	// if not all of the pods were scheduled, we can't do anything
 	if !results.AllNonPendingPodsScheduled() {
+		observeSingleNodeSkip(CandidateSkipPodsDidNotSchedule)
 		// This method is used by multi-node consolidation as well, so we'll only report in the single node case
 		if len(candidates) == 1 {
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, pretty.Sentence(results.NonPendingPodSchedulingErrors()))...)
@@ -188,6 +207,14 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 
 	// we're not going to turn a single node into multiple candidates
 	if len(results.NewNodeClaims) != 1 {
+		if len(candidates) == 1 {
+			nodePool := candidates[0].NodePool.Name
+			ObserveConsolidationCandidateSkip(consolidationType, nodePool, CandidateSkipMultipleReplacements)
+			ConsolidationRequiredReplacements.Observe(float64(len(results.NewNodeClaims)), map[string]string{
+				ConsolidationTypeLabel: consolidationType,
+				metrics.NodePoolLabel:  nodePool,
+			})
+		}
 		if len(candidates) == 1 {
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Can't remove without creating %d candidates", len(results.NewNodeClaims)))...)
 		}
@@ -211,7 +238,11 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 
 	if allExistingAreSpot &&
 		results.NewNodeClaims[0].Requirements.Get(v1.CapacityTypeLabelKey).Has(v1.CapacityTypeSpot) {
-		return c.computeSpotToSpotConsolidation(ctx, candidates, results, candidatePrice)
+		cmd, err := c.computeSpotToSpotConsolidation(ctx, candidates, results, candidatePrice)
+		if err == nil && cmd.Decision() == NoOpDecision {
+			observeSingleNodeSkip(CandidateSkipNoOp)
+		}
+		return cmd, err
 	}
 
 	// filterByPrice returns the instanceTypes that are lower priced than the current candidate and any error that indicates the input couldn't be filtered.
@@ -220,12 +251,14 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 	// causing churns and landing onto lower available spot instance ultimately resulting in higher interruptions.
 	results.NewNodeClaims[0], err = results.NewNodeClaims[0].RemoveInstanceTypeOptionsByPriceAndMinValues(results.NewNodeClaims[0].Requirements, candidatePrice)
 	if err != nil {
+		observeSingleNodeSkip(CandidateSkipNoOp)
 		if len(candidates) == 1 {
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Filtering by price: %v", err))...)
 		}
 		return Command{}, nil
 	}
 	if len(results.NewNodeClaims[0].InstanceTypeOptions) == 0 {
+		observeSingleNodeSkip(CandidateSkipNoOp)
 		if len(candidates) == 1 {
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, "Can't replace with a cheaper node")...)
 		}
@@ -258,6 +291,8 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 //  2. For single-node consolidation:
 //     a. There are at least 15 cheapest instance type replacement options to consolidate.
 //     b. The current candidate is NOT part of the first 15 cheapest instance types inorder to avoid repeated consolidation.
+//
+// nolint:unparam
 func (c *consolidation) computeSpotToSpotConsolidation(ctx context.Context, candidates []*Candidate, results pscheduling.Results, candidatePrice float64) (Command, error) {
 
 	// Spot consolidation is turned off.
