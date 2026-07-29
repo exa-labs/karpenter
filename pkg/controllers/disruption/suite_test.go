@@ -1949,11 +1949,6 @@ var _ = Describe("Metrics", func() {
 			metrics.ReasonLabel:  "empty",
 			"consolidation_type": "empty",
 		})
-		_, found := FindMetricWithLabelValues("karpenter_voluntary_disruption_consolidation_candidate_skips_total", map[string]string{
-			"consolidation_type":  "single",
-			metrics.NodePoolLabel: nodePool.Name,
-		})
-		Expect(found).To(BeFalse())
 		ExpectMetricCounterValue(disruption.NodepoolDecisionsPerformed, 1, map[string]string{
 			metrics.NodePoolLabel: nodePool.Name,
 			"decision":            "delete",

@@ -4406,6 +4406,16 @@ var _ = Describe("Consolidation", func() {
 				Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(2))
 				// and delete node3 in single nodeclaim consolidation
 				ExpectNotFound(ctx, env.Client, nodeClaims[2], nodes[2])
+				_, found := FindMetricWithLabelValues("karpenter_voluntary_disruption_consolidation_candidate_skips_total", map[string]string{
+					"consolidation_type":  "single",
+					metrics.NodePoolLabel: nodePool.Name,
+				})
+				Expect(found).To(BeFalse())
+				_, found = FindMetricWithLabelValues("karpenter_voluntary_disruption_consolidation_accepted_candidate_position", map[string]string{
+					"consolidation_type":  "single",
+					metrics.NodePoolLabel: nodePool.Name,
+				})
+				Expect(found).To(BeTrue())
 			},
 			Entry("if the candidate is on-demand node", false),
 			Entry("if the candidate is spot node", true),
