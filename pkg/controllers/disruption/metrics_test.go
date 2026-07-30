@@ -20,14 +20,20 @@ import (
 	"testing"
 
 	prometheus "github.com/prometheus/client_model/go"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
+	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/controllers/disruption"
 )
 
 func TestConsolidationMetricsRecordLabels(t *testing.T) {
 	disruption.ObserveConsolidationCandidateSkip("unit", "unit-pool", "unit-reason")
 	disruption.ObserveConsolidationPass("unit", disruption.PassOutcomeNoOp, 265)
+	disruption.ObserveEligibleNodesByNodePool([]*disruption.Candidate{
+		{NodePool: &v1.NodePool{ObjectMeta: metav1.ObjectMeta{Name: "unit-pool"}}},
+	}, "unit")
+	disruption.ObserveUnseenNodePools("unit", []string{"unseen-pool"})
 
 	families, err := crmetrics.Registry.Gather()
 	if err != nil {
@@ -51,6 +57,18 @@ func TestConsolidationMetricsRecordLabels(t *testing.T) {
 		"consolidation_type": "unit",
 	}) {
 		t.Fatal("candidate depth metric was not recorded")
+	}
+	if !hasMetric(families, "karpenter_voluntary_disruption_unseen_nodepools_total", map[string]string{
+		"consolidation_type": "unit",
+		"nodepool":           "unseen-pool",
+	}) {
+		t.Fatal("unseen nodepool metric was not recorded")
+	}
+	if !hasMetric(families, "karpenter_voluntary_disruption_eligible_nodes_by_nodepool", map[string]string{
+		"consolidation_type": "unit",
+		"nodepool":           "unit-pool",
+	}) {
+		t.Fatal("eligible nodepool metric was not recorded")
 	}
 }
 
