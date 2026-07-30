@@ -32,7 +32,10 @@ func TestConsolidationMetricsRecordLabels(t *testing.T) {
 	disruption.ObserveConsolidationPass("unit", disruption.PassOutcomeNoOp, 265)
 	disruption.ObserveEligibleNodesByNodePool([]*disruption.Candidate{
 		{NodePool: &v1.NodePool{ObjectMeta: metav1.ObjectMeta{Name: "unit-pool"}}},
-	}, "unit")
+	}, "", "unit-reason")
+	disruption.ObserveEligibleNodesByNodePool([]*disruption.Candidate{
+		{NodePool: &v1.NodePool{ObjectMeta: metav1.ObjectMeta{Name: "unit-pool"}}},
+	}, "", "other-reason")
 	disruption.ObserveUnseenNodePools("unit", []string{"unseen-pool"})
 
 	families, err := crmetrics.Registry.Gather()
@@ -65,10 +68,18 @@ func TestConsolidationMetricsRecordLabels(t *testing.T) {
 		t.Fatal("unseen nodepool metric was not recorded")
 	}
 	if !hasMetric(families, "karpenter_voluntary_disruption_eligible_nodes_by_nodepool", map[string]string{
-		"consolidation_type": "unit",
+		"consolidation_type": "",
 		"nodepool":           "unit-pool",
+		"reason":             "unit-reason",
 	}) {
-		t.Fatal("eligible nodepool metric was not recorded")
+		t.Fatal("eligible nodepool metric was not recorded with expected labels")
+	}
+	if !hasMetric(families, "karpenter_voluntary_disruption_eligible_nodes_by_nodepool", map[string]string{
+		"consolidation_type": "",
+		"nodepool":           "unit-pool",
+		"reason":             "other-reason",
+	}) {
+		t.Fatal("eligible nodepool metric lost a sibling reason series")
 	}
 }
 

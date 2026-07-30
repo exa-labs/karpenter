@@ -269,9 +269,9 @@ var (
 			Namespace: metrics.Namespace,
 			Subsystem: voluntaryDisruptionSubsystem,
 			Name:      "eligible_nodes_by_nodepool",
-			Help:      "Number of nodes eligible for disruption by NodePool and consolidation type.",
+			Help:      "Number of nodes eligible for disruption by NodePool, disruption reason, and consolidation type.",
 		},
-		[]string{metrics.NodePoolLabel, ConsolidationTypeLabel},
+		[]string{metrics.NodePoolLabel, metrics.ReasonLabel, ConsolidationTypeLabel},
 	)
 	UnseenNodePoolsTotal = opmetrics.NewPrometheusCounter(
 		crmetrics.Registry,
@@ -287,32 +287,77 @@ var (
 
 var (
 	eligibleNodePoolsMu sync.Mutex
-	eligibleNodePools   = map[string]map[string]int{}
+	eligibleNodePools   = map[string]eligibleNodePoolSeries{}
 )
 
-func ObserveEligibleNodesByNodePool(candidates []*Candidate, consolidationType string) {
-	current := map[string]int{}
+type eligibleNodePoolSeries struct {
+	labels map[string]string
+	scope  string
+	count  int
+}
+
+func ObserveEligibleNodesByNodePool(candidates []*Candidate, consolidationType, reason string) {
+	current := map[string]eligibleNodePoolSeries{}
 	for _, candidate := range candidates {
-		current[candidate.NodePool.Name]++
+		labels := map[string]string{
+			metrics.NodePoolLabel:  candidate.NodePool.Name,
+			metrics.ReasonLabel:    reason,
+			ConsolidationTypeLabel: consolidationType,
+		}
+		key := labelKey(labels)
+		series := current[key]
+		series.labels = labels
+		series.scope = labelKeyWithout(labels, metrics.NodePoolLabel)
+		series.count++
+		current[key] = series
 	}
 
 	eligibleNodePoolsMu.Lock()
 	defer eligibleNodePoolsMu.Unlock()
-	for nodePool := range eligibleNodePools[consolidationType] {
-		if _, ok := current[nodePool]; !ok {
-			EligibleNodesByNodePool.Delete(map[string]string{
-				metrics.NodePoolLabel:  nodePool,
-				ConsolidationTypeLabel: consolidationType,
-			})
+	scopeLabels := map[string]string{
+		metrics.ReasonLabel:    reason,
+		ConsolidationTypeLabel: consolidationType,
+	}
+	scope := labelKeyWithout(scopeLabels, metrics.NodePoolLabel)
+	for key, series := range eligibleNodePools {
+		if series.scope == scope {
+			if _, ok := current[key]; ok {
+				continue
+			}
+			EligibleNodesByNodePool.Delete(series.labels)
+			delete(eligibleNodePools, key)
 		}
 	}
-	for nodePool, count := range current {
-		EligibleNodesByNodePool.Set(float64(count), map[string]string{
-			metrics.NodePoolLabel:  nodePool,
-			ConsolidationTypeLabel: consolidationType,
-		})
+	for key, series := range current {
+		EligibleNodesByNodePool.Set(float64(series.count), series.labels)
+		eligibleNodePools[key] = series
 	}
-	eligibleNodePools[consolidationType] = current
+}
+
+func labelKey(labels map[string]string) string {
+	return labelKeyWithout(labels)
+}
+
+func labelKeyWithout(labels map[string]string, excluded ...string) string {
+	excludedLabels := map[string]struct{}{}
+	for _, label := range excluded {
+		excludedLabels[label] = struct{}{}
+	}
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		if _, excluded := excludedLabels[key]; !excluded {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	var builder strings.Builder
+	for _, key := range keys {
+		builder.WriteString(key)
+		builder.WriteByte('=')
+		builder.WriteString(labels[key])
+		builder.WriteByte(0)
+	}
+	return builder.String()
 }
 
 func ObserveUnseenNodePools(consolidationType string, nodePools []string) {
