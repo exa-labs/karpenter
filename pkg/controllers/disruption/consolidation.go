@@ -197,6 +197,9 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 	}
 
 	// were we able to schedule all the pods on the inflight candidates?
+	if len(candidates) == 1 {
+		ObserveConsolidationReplacementAttempt(consolidationType, candidates[0].NodePool.Name, len(results.NewNodeClaims))
+	}
 	if len(results.NewNodeClaims) == 0 {
 		return Command{
 			Candidates:          candidates,

@@ -40,6 +40,7 @@ const (
 	policyLabel                  = "policy"
 	outcomeLabel                 = "outcome"
 	reasonLabel                  = "reason"
+	replacementCountLabel        = "replacement_count"
 	capacityTypeTransitionLabel  = "capacity_type_transition"
 )
 
@@ -242,6 +243,16 @@ var (
 		},
 		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel, reasonLabel},
 	)
+	ConsolidationReplacementAttemptsTotal = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "consolidation_replacement_attempts_total",
+			Help:      "Number of single-node consolidation simulations by replacement count.",
+		},
+		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel, replacementCountLabel},
+	)
 	ConsolidationRequiredReplacements = opmetrics.NewPrometheusHistogram(
 		crmetrics.Registry,
 		prometheus.HistogramOpts{
@@ -369,6 +380,20 @@ func ObserveConsolidationCandidateSkip(consolidationType, nodePool, reason strin
 		ConsolidationTypeLabel: consolidationType,
 		metrics.NodePoolLabel:  nodePool,
 		reasonLabel:            reason,
+	})
+}
+
+func ObserveConsolidationReplacementAttempt(consolidationType, nodePool string, replacementCount int) {
+	bucket := "2+"
+	if replacementCount == 0 {
+		bucket = "0"
+	} else if replacementCount == 1 {
+		bucket = "1"
+	}
+	ConsolidationReplacementAttemptsTotal.Inc(map[string]string{
+		ConsolidationTypeLabel: consolidationType,
+		metrics.NodePoolLabel:  nodePool,
+		replacementCountLabel:  bucket,
 	})
 }
 

@@ -30,6 +30,9 @@ import (
 func TestConsolidationMetricsRecordLabels(t *testing.T) {
 	disruption.ObserveConsolidationCandidateSkip("unit", "unit-pool", "unit-reason")
 	disruption.ObserveConsolidationPass("unit", disruption.PassOutcomeNoOp, 265)
+	disruption.ObserveConsolidationReplacementAttempt("unit", "unit-pool", 0)
+	disruption.ObserveConsolidationReplacementAttempt("unit", "unit-pool", 1)
+	disruption.ObserveConsolidationReplacementAttempt("unit", "unit-pool", 2)
 	disruption.ObserveEligibleNodesByNodePool([]*disruption.Candidate{
 		{NodePool: &v1.NodePool{ObjectMeta: metav1.ObjectMeta{Name: "unit-pool"}}},
 	}, "", "unit-reason")
@@ -55,6 +58,15 @@ func TestConsolidationMetricsRecordLabels(t *testing.T) {
 		"outcome":            disruption.PassOutcomeNoOp,
 	}) {
 		t.Fatal("pass outcome metric was not recorded with expected labels")
+	}
+	for _, replacementCount := range []string{"0", "1", "2+"} {
+		if !hasMetric(families, "karpenter_voluntary_disruption_consolidation_replacement_attempts_total", map[string]string{
+			"consolidation_type": "unit",
+			"nodepool":           "unit-pool",
+			"replacement_count":  replacementCount,
+		}) {
+			t.Fatalf("replacement attempt metric was not recorded for count %s", replacementCount)
+		}
 	}
 	if !hasMetric(families, "karpenter_voluntary_disruption_consolidation_candidate_depth", map[string]string{
 		"consolidation_type": "unit",
