@@ -297,6 +297,10 @@ type eligibleNodePoolSeries struct {
 }
 
 func ObserveEligibleNodesByNodePool(candidates []*Candidate, consolidationType, reason string) {
+	scope := labelKeyWithout(map[string]string{
+		metrics.ReasonLabel:    reason,
+		ConsolidationTypeLabel: consolidationType,
+	}, metrics.NodePoolLabel)
 	current := map[string]eligibleNodePoolSeries{}
 	for _, candidate := range candidates {
 		labels := map[string]string{
@@ -304,21 +308,16 @@ func ObserveEligibleNodesByNodePool(candidates []*Candidate, consolidationType, 
 			metrics.ReasonLabel:    reason,
 			ConsolidationTypeLabel: consolidationType,
 		}
-		key := labelKey(labels)
+		key := labelKeyWithout(labels)
 		series := current[key]
 		series.labels = labels
-		series.scope = labelKeyWithout(labels, metrics.NodePoolLabel)
+		series.scope = scope
 		series.count++
 		current[key] = series
 	}
 
 	eligibleNodePoolsMu.Lock()
 	defer eligibleNodePoolsMu.Unlock()
-	scopeLabels := map[string]string{
-		metrics.ReasonLabel:    reason,
-		ConsolidationTypeLabel: consolidationType,
-	}
-	scope := labelKeyWithout(scopeLabels, metrics.NodePoolLabel)
 	for key, series := range eligibleNodePools {
 		if series.scope == scope {
 			if _, ok := current[key]; ok {
@@ -332,10 +331,6 @@ func ObserveEligibleNodesByNodePool(candidates []*Candidate, consolidationType, 
 		EligibleNodesByNodePool.Set(float64(series.count), series.labels)
 		eligibleNodePools[key] = series
 	}
-}
-
-func labelKey(labels map[string]string) string {
-	return labelKeyWithout(labels)
 }
 
 func labelKeyWithout(labels map[string]string, excluded ...string) string {
