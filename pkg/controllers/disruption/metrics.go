@@ -385,9 +385,10 @@ func ObserveConsolidationCandidateSkip(consolidationType, nodePool, reason strin
 
 func ObserveConsolidationReplacementAttempt(consolidationType, nodePool string, replacementCount int) {
 	bucket := "2+"
-	if replacementCount == 0 {
+	switch replacementCount {
+	case 0:
 		bucket = "0"
-	} else if replacementCount == 1 {
+	case 1:
 		bucket = "1"
 	}
 	ConsolidationReplacementAttemptsTotal.Inc(map[string]string{
