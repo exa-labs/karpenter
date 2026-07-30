@@ -20,6 +20,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"sync"
 
 	opmetrics "github.com/awslabs/operatorpkg/metrics"
 	"github.com/prometheus/client_golang/prometheus"
@@ -262,7 +263,66 @@ var (
 		},
 		[]string{metrics.NodePoolLabel, decisionLabel, capacityTypeTransitionLabel},
 	)
+	EligibleNodesByNodePool = opmetrics.NewPrometheusGauge(
+		crmetrics.Registry,
+		prometheus.GaugeOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "eligible_nodes_by_nodepool",
+			Help:      "Number of nodes eligible for disruption by NodePool and consolidation type.",
+		},
+		[]string{metrics.NodePoolLabel, ConsolidationTypeLabel},
+	)
+	UnseenNodePoolsTotal = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "unseen_nodepools_total",
+			Help:      "Number of NodePools not reached by a timed-out consolidation pass.",
+		},
+		[]string{metrics.NodePoolLabel, ConsolidationTypeLabel},
+	)
 )
+
+var (
+	eligibleNodePoolsMu sync.Mutex
+	eligibleNodePools   = map[string]map[string]int{}
+)
+
+func ObserveEligibleNodesByNodePool(candidates []*Candidate, consolidationType string) {
+	current := map[string]int{}
+	for _, candidate := range candidates {
+		current[candidate.NodePool.Name]++
+	}
+
+	eligibleNodePoolsMu.Lock()
+	defer eligibleNodePoolsMu.Unlock()
+	for nodePool := range eligibleNodePools[consolidationType] {
+		if _, ok := current[nodePool]; !ok {
+			EligibleNodesByNodePool.Delete(map[string]string{
+				metrics.NodePoolLabel:  nodePool,
+				ConsolidationTypeLabel: consolidationType,
+			})
+		}
+	}
+	for nodePool, count := range current {
+		EligibleNodesByNodePool.Set(float64(count), map[string]string{
+			metrics.NodePoolLabel:  nodePool,
+			ConsolidationTypeLabel: consolidationType,
+		})
+	}
+	eligibleNodePools[consolidationType] = current
+}
+
+func ObserveUnseenNodePools(consolidationType string, nodePools []string) {
+	for _, nodePool := range nodePools {
+		UnseenNodePoolsTotal.Inc(map[string]string{
+			metrics.NodePoolLabel:  nodePool,
+			ConsolidationTypeLabel: consolidationType,
+		})
+	}
+}
 
 func ObserveConsolidationCandidateSkip(consolidationType, nodePool, reason string) {
 	ConsolidationCandidateSkipsTotal.Inc(map[string]string{

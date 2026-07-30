@@ -78,6 +78,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 			log.FromContext(ctx).V(1).Info("abandoning single-node consolidation due to timeout", "candidates_evaluated", i)
 
 			s.PreviouslyUnseenNodePools = unseenNodePools
+			ObserveUnseenNodePools(s.ConsolidationType(), unseenNodePools.UnsortedList())
 
 			return []Command{}, nil
 		}
