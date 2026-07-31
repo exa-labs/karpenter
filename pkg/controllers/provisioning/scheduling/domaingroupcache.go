@@ -30,6 +30,24 @@ import (
 
 type domainGroupCacheContextKey struct{}
 
+type instanceTypeRevisionsContextKey struct{}
+
+// WithInstanceTypeRevisions attaches per-NodePool instance type revisions (from an
+// InstanceTypesRevisionProvider) to the context. A NodePool present in the map is guaranteed by
+// the provider to have identical instance type content whenever (UID, generation, revision) all
+// match, letting the domain group fingerprint skip hashing that pool's requirement content.
+func WithInstanceTypeRevisions(ctx context.Context, revisions map[string]uint64) context.Context {
+	if len(revisions) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, instanceTypeRevisionsContextKey{}, revisions)
+}
+
+func instanceTypeRevisionsFromContext(ctx context.Context) map[string]uint64 {
+	revisions, _ := ctx.Value(instanceTypeRevisionsContextKey{}).(map[string]uint64)
+	return revisions
+}
+
 // DomainGroupCache memoizes buildDomainGroups results for one scheduling pass. Domain groups are a
 // pure function of the NodePools and their instance types, both of which are candidate-invariant,
 // so consolidation rebuilding a scheduler per candidate recomputes an identical result every time.
@@ -68,7 +86,7 @@ func domainGroupsWithCache(ctx context.Context, nodePools []*v1.NodePool, instan
 	if cache == nil {
 		return buildDomainGroups(nodePools, instanceTypes)
 	}
-	fingerprint, ok := cache.fingerprintInputs(nodePools, instanceTypes)
+	fingerprint, ok := cache.fingerprintInputs(instanceTypeRevisionsFromContext(ctx), nodePools, instanceTypes)
 	if !ok {
 		DomainGroupCacheEventsTotal.Inc(map[string]string{outcomeLabel: cacheOutcomeBypass})
 		return buildDomainGroups(nodePools, instanceTypes)
@@ -91,11 +109,15 @@ func domainGroupsWithCache(ctx context.Context, nodePools []*v1.NodePool, instan
 // labels, and taints are all under spec, so UID+Generation covers them) and the per-NodePool
 // instance type requirements (which carry offering-derived domains such as zones and capacity
 // types). Instance types are fetched from a generation-keyed provider cache, but content can change
-// for the same generation across cache refills, so identity alone is not a safe key. Requirement
-// values are hashed order-insensitively because set iteration order is not deterministic.
-func (c *DomainGroupCache) fingerprintInputs(nodePools []*v1.NodePool, instanceTypes map[string][]*cloudprovider.InstanceType) (uint64, bool) {
+// for the same generation across cache refills, so identity alone is not a safe key. When the
+// provider reported a content revision for a NodePool, hashing that revision replaces hashing the
+// pool's per-instance-type requirement content, which is what makes cache hits cheap at large
+// instance type counts. Requirement values are hashed order-insensitively because set iteration
+// order is not deterministic.
+func (c *DomainGroupCache) fingerprintInputs(revisions map[string]uint64, nodePools []*v1.NodePool, instanceTypes map[string][]*cloudprovider.InstanceType) (uint64, bool) {
 	var h maphash.Hash
 	h.SetSeed(c.seed)
+	revisionPools, contentPools := 0, 0
 	for _, np := range nodePools {
 		if np.UID == "" {
 			return 0, false
@@ -105,6 +127,14 @@ func (c *DomainGroupCache) fingerprintInputs(nodePools []*v1.NodePool, instanceT
 		writeUint64(&h, uint64(np.Generation)) //nolint:gosec
 		its := instanceTypes[np.Name]
 		writeUint64(&h, uint64(len(its)))
+		if revision, ok := revisions[np.Name]; ok {
+			revisionPools++
+			h.WriteByte(1)
+			writeUint64(&h, revision)
+			continue
+		}
+		contentPools++
+		h.WriteByte(0)
 		for _, it := range its {
 			h.WriteString(it.Name)
 			h.WriteByte(0)
@@ -112,7 +142,19 @@ func (c *DomainGroupCache) fingerprintInputs(nodePools []*v1.NodePool, instanceT
 		}
 	}
 	writeUint64(&h, uint64(len(instanceTypes)))
+	DomainGroupFingerprintTotal.Inc(map[string]string{modeLabel: fingerprintMode(revisionPools, contentPools)})
 	return h.Sum64(), true
+}
+
+func fingerprintMode(revisionPools, contentPools int) string {
+	switch {
+	case contentPools == 0 && revisionPools > 0:
+		return fingerprintModeRevision
+	case revisionPools == 0:
+		return fingerprintModeContent
+	default:
+		return fingerprintModeMixed
+	}
 }
 
 // hashRequirements produces an order-insensitive hash of a Requirements map by XOR-combining each

@@ -35,16 +35,20 @@ import (
 )
 
 func BenchmarkDomainGroupsNoCache(b *testing.B) {
-	benchmarkDomainGroups(b, false)
+	benchmarkDomainGroups(b, false, false)
 }
 
 func BenchmarkDomainGroupsCache(b *testing.B) {
-	benchmarkDomainGroups(b, true)
+	benchmarkDomainGroups(b, true, false)
+}
+
+func BenchmarkDomainGroupsCacheWithRevisions(b *testing.B) {
+	benchmarkDomainGroups(b, true, true)
 }
 
 // benchmarkDomainGroups approximates a production-shaped input: several NodePools, each resolving
 // hundreds of instance types with multi-zone spot and on-demand offerings.
-func benchmarkDomainGroups(b *testing.B, useCache bool) {
+func benchmarkDomainGroups(b *testing.B, useCache bool, useRevisions bool) {
 	zones := []string{"zone-1", "zone-2", "zone-3", "zone-4"}
 	nodePools := make([]*v1.NodePool, 8)
 	instanceTypes := map[string][]*cloudprovider.InstanceType{}
@@ -77,6 +81,13 @@ func benchmarkDomainGroups(b *testing.B, useCache bool) {
 	ctx := context.Background()
 	if useCache {
 		ctx = WithDomainGroupCache(ctx, NewDomainGroupCache())
+	}
+	if useRevisions {
+		revisions := map[string]uint64{}
+		for _, np := range nodePools {
+			revisions[np.Name] = 1
+		}
+		ctx = WithInstanceTypeRevisions(ctx, revisions)
 	}
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
