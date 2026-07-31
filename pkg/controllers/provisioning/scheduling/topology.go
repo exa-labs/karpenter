@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"time"
 
 	"github.com/awslabs/operatorpkg/option"
 	"github.com/awslabs/operatorpkg/serrors"
@@ -80,7 +81,7 @@ func NewTopology(
 		preferencePolicy:      option.Resolve(opts...).preferencePolicy,
 		cluster:               cluster,
 		stateNodes:            stateNodes,
-		domainGroups:          buildDomainGroups(nodePools, instanceTypes),
+		domainGroups:          domainGroupsWithCache(ctx, nodePools, instanceTypes),
 		topologyGroups:        map[uint64]*TopologyGroup{},
 		inverseTopologyGroups: map[uint64]*TopologyGroup{},
 		excludedPods:          sets.New[string](),
@@ -92,10 +93,12 @@ func NewTopology(
 		t.excludedPods.Insert(string(p.UID))
 	}
 
+	updateStart := time.Now()
 	errs := t.updateInverseAffinities(ctx)
 	for i := range pods {
 		errs = multierr.Append(errs, t.Update(ctx, pods[i]))
 	}
+	ConstructionPhaseDurationSeconds.Observe(time.Since(updateStart).Seconds(), map[string]string{phaseLabel: phaseTopologyUpdate})
 	if errs != nil {
 		return nil, errs
 	}

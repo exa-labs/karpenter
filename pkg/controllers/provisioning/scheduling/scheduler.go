@@ -184,7 +184,7 @@ func NewScheduler(
 			return np.Name, corev1.ResourceList(np.Spec.Limits)
 		}),
 		clock:                   clock,
-		reservationManager:      NewReservationManager(instanceTypes),
+		reservationManager:      newReservationManagerTimed(instanceTypes),
 		reservedOfferingMode:    option.Resolve(opts...).reservedOfferingMode,
 		preferencePolicy:        option.Resolve(opts...).preferencePolicy,
 		minValuesPolicy:         minValuesPolicy,
@@ -214,7 +214,9 @@ func NewScheduler(
 		}
 	}
 	s.deletingNodeNames = deletingNodeNames
+	existingNodesStart := time.Now()
 	s.calculateExistingNodeClaims(ctx, stateNodes, daemonSetPods, nodeToNodePool, option.Resolve(opts...).enforceConsolidateAfter)
+	ConstructionPhaseDurationSeconds.Observe(time.Since(existingNodesStart).Seconds(), map[string]string{phaseLabel: phaseExistingNodes})
 	return s
 }
 

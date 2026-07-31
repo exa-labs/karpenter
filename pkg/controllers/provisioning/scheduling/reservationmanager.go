@@ -18,7 +18,9 @@ package scheduling
 
 import (
 	"fmt"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
@@ -30,12 +32,26 @@ type ReservationManager struct {
 	capacity     map[string]int              // reservation id -> count
 }
 
+// newReservationManagerTimed wraps NewReservationManager with a construction phase duration observation.
+func newReservationManagerTimed(instanceTypes map[string][]*cloudprovider.InstanceType) *ReservationManager {
+	start := time.Now()
+	defer func() {
+		ConstructionPhaseDurationSeconds.Observe(time.Since(start).Seconds(), map[string]string{phaseLabel: phaseReservationManager})
+	}()
+	return NewReservationManager(instanceTypes)
+}
+
 func NewReservationManager(instanceTypes map[string][]*cloudprovider.InstanceType) *ReservationManager {
 	capacity := map[string]int{}
 	for _, its := range instanceTypes {
 		for _, it := range its {
 			for _, o := range it.Offerings {
-				if o.CapacityType() != v1.CapacityTypeReserved {
+				// Direct requirement access avoids the per-offering allocations in Requirements.Get
+				// (which constructs a new Requirement for absent keys) and Requirement.Any (which
+				// copies the value set) on this hot path. Reserved offerings always carry a
+				// single-valued In requirement for the capacity type.
+				ct, ok := o.Requirements[v1.CapacityTypeLabelKey]
+				if !ok || ct.Operator() != corev1.NodeSelectorOpIn || !ct.Has(v1.CapacityTypeReserved) {
 					continue
 				}
 				// If we have multiple offerings with the same reservation ID, track the one with the least capacity. This could be

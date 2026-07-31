@@ -56,6 +56,7 @@ func NewSingleNodeConsolidation(c consolidation, opts ...option.Function[MethodO
 func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptionBudgetMapping map[string]int, candidates ...*Candidate) ([]Command, error) {
 	ctx = withConsolidationType(ctx, s.ConsolidationType())
 	ctx = scheduling.WithDaemonOverheadCache(ctx, scheduling.NewDaemonOverheadCache())
+	ctx = scheduling.WithDomainGroupCache(ctx, scheduling.NewDomainGroupCache())
 	depth := 0
 	evaluatedCandidateDepthByNodePool := map[string]int{}
 	outcome := PassOutcomeNoOp

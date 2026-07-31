@@ -28,6 +28,17 @@ const (
 	ControllerLabel    = "controller"
 	schedulingIDLabel  = "scheduling_id"
 	schedulerSubsystem = "scheduler"
+	phaseLabel         = "phase"
+	outcomeLabel       = "outcome"
+
+	phaseDomainGroups       = "domain_groups"
+	phaseTopologyUpdate     = "topology_update"
+	phaseReservationManager = "reservation_manager"
+	phaseExistingNodes      = "existing_nodes"
+
+	cacheOutcomeHit    = "hit"
+	cacheOutcomeMiss   = "miss"
+	cacheOutcomeBypass = "bypass"
 )
 
 var (
@@ -90,6 +101,31 @@ var (
 		},
 		[]string{
 			ControllerLabel,
+		},
+	)
+	ConstructionPhaseDurationSeconds = opmetrics.NewPrometheusHistogram(
+		crmetrics.Registry,
+		prometheus.HistogramOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: schedulerSubsystem,
+			Name:      "construction_phase_duration_seconds",
+			Help:      "Duration of individual scheduler construction phases, labeled by phase.",
+			Buckets:   []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+		},
+		[]string{
+			phaseLabel,
+		},
+	)
+	DomainGroupCacheEventsTotal = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: schedulerSubsystem,
+			Name:      "domain_group_cache_events_total",
+			Help:      "Number of pass-scoped domain group cache lookups by outcome (hit, miss, bypass).",
+		},
+		[]string{
+			outcomeLabel,
 		},
 	)
 	PendingPodsByEffectiveZone = opmetrics.NewPrometheusGauge(

@@ -18,6 +18,7 @@ package scheduling
 
 import (
 	"fmt"
+	"hash/maphash"
 	"math"
 	"math/rand"
 	"strconv"
@@ -281,6 +282,39 @@ func (r *Requirement) Has(value string) bool {
 
 func (r *Requirement) Values() []string {
 	return r.values.UnsortedList()
+}
+
+// ContentHash64 returns an order-insensitive content hash of the requirement's key, operator,
+// bounds, and values, suitable for cheap change detection without allocating a value slice.
+func (r *Requirement) ContentHash64(seed maphash.Seed) uint64 {
+	var h maphash.Hash
+	h.SetSeed(seed)
+	h.WriteString(r.Key)
+	h.WriteByte(0)
+	h.WriteString(string(r.Operator()))
+	if r.gte != nil {
+		h.WriteString(strconv.Itoa(*r.gte))
+	}
+	h.WriteByte(0)
+	if r.lte != nil {
+		h.WriteString(strconv.Itoa(*r.lte))
+	}
+	entry := h.Sum64()
+	var values uint64
+	for value := range r.values {
+		values ^= maphash.String(seed, value)
+	}
+	return hashFinalize(entry ^ hashFinalize(values))
+}
+
+// hashFinalize mixes an XOR-combined hash so that combined components cannot cancel each other.
+func hashFinalize(v uint64) uint64 {
+	v ^= v >> 33
+	v *= 0xff51afd7ed558ccd
+	v ^= v >> 33
+	v *= 0xc4ceb9fe1a85ec53
+	v ^= v >> 33
+	return v
 }
 
 func (r *Requirement) Insert(items ...string) {
