@@ -190,6 +190,17 @@ var (
 		},
 		[]string{ConsolidationTypeLabel},
 	)
+	ConsolidationCandidateDepthByNodePool = opmetrics.NewPrometheusHistogram(
+		crmetrics.Registry,
+		prometheus.HistogramOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "consolidation_candidate_depth_by_nodepool",
+			Help:      "Number of candidates evaluated per NodePool in a consolidation pass. Labeled by consolidation type and NodePool.",
+			Buckets:   consolidationCandidateBuckets,
+		},
+		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel},
+	)
 	AcceptedCandidatePosition = opmetrics.NewPrometheusHistogram(
 		crmetrics.Registry,
 		prometheus.HistogramOpts{
@@ -290,7 +301,7 @@ var (
 			Namespace: metrics.Namespace,
 			Subsystem: voluntaryDisruptionSubsystem,
 			Name:      "unseen_nodepools_total",
-			Help:      "Number of NodePools not reached by a timed-out consolidation pass.",
+			Help:      "Number of NodePools with zero candidates evaluated in a timed-out consolidation pass.",
 		},
 		[]string{metrics.NodePoolLabel, ConsolidationTypeLabel},
 	)
@@ -404,6 +415,15 @@ func ObserveConsolidationPass(consolidationType, outcome string, depth int) {
 		ConsolidationTypeLabel: consolidationType,
 		outcomeLabel:           outcome,
 	})
+}
+
+func ObserveConsolidationCandidateDepthByNodePool(consolidationType string, depths map[string]int) {
+	for nodePool, depth := range depths {
+		ConsolidationCandidateDepthByNodePool.Observe(float64(depth), map[string]string{
+			ConsolidationTypeLabel: consolidationType,
+			metrics.NodePoolLabel:  nodePool,
+		})
+	}
 }
 
 func ObserveAcceptedCandidate(cmd Command, consolidationType string, position int) {

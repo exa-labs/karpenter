@@ -30,6 +30,9 @@ import (
 func TestConsolidationMetricsRecordLabels(t *testing.T) {
 	disruption.ObserveConsolidationCandidateSkip("unit", "unit-pool", "unit-reason")
 	disruption.ObserveConsolidationPass("unit", disruption.PassOutcomeNoOp, 265)
+	disruption.ObserveConsolidationCandidateDepthByNodePool("unit", map[string]int{
+		"unit-pool": 7,
+	})
 	disruption.ObserveConsolidationReplacementAttempt("unit", "unit-pool", 0)
 	disruption.ObserveConsolidationReplacementAttempt("unit", "unit-pool", 1)
 	disruption.ObserveConsolidationReplacementAttempt("unit", "unit-pool", 2)
@@ -72,6 +75,12 @@ func TestConsolidationMetricsRecordLabels(t *testing.T) {
 		"consolidation_type": "unit",
 	}) {
 		t.Fatal("candidate depth metric was not recorded")
+	}
+	if !hasMetric(families, "karpenter_voluntary_disruption_consolidation_candidate_depth_by_nodepool", map[string]string{
+		"consolidation_type": "unit",
+		"nodepool":           "unit-pool",
+	}) {
+		t.Fatal("per-nodepool candidate depth metric was not recorded")
 	}
 	if !hasMetric(families, "karpenter_voluntary_disruption_unseen_nodepools_total", map[string]string{
 		"consolidation_type": "unit",
