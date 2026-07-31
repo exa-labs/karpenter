@@ -192,6 +192,10 @@ func NewScheduler(
 		allocator:               allocator,
 		instanceTypes:           instanceTypes,
 		cachedResourceClaims:    map[types.NamespacedName]*resourcev1.ResourceClaim{},
+		daemonOverheadCache:     DaemonOverheadCacheFromContext(ctx),
+	}
+	if s.daemonOverheadCache != nil {
+		s.daemonOverheadCache.updateDaemonSetGeneration(daemonSetPods)
 	}
 
 	npByName := lo.SliceToMap(nodePools, func(np *v1.NodePool) (string, *v1.NodePool) {
@@ -256,6 +260,8 @@ type Scheduler struct {
 	instanceTypes map[string][]*cloudprovider.InstanceType
 	// cachedResourceClaims memoizes ResourceClaim lookups for the duration of a single scheduling loop.
 	cachedResourceClaims map[types.NamespacedName]*resourcev1.ResourceClaim
+	// daemonOverheadCache memoizes candidate-invariant existing-node data for one consolidation pass.
+	daemonOverheadCache *DaemonOverheadCache
 }
 
 // DRAError indicates a pod will not be attempted to be scheduled because it has Dynamic Resource Allocation requirements
@@ -804,6 +810,16 @@ func (s *Scheduler) calculateExistingNodeClaims(ctx context.Context, stateNodes 
 // getCompatibleDaemonPods filters daemon pods that can schedule to the given node
 func (s *Scheduler) getCompatibleDaemonPods(ctx context.Context, node *state.StateNode, taints []corev1.Taint, daemonSetPods []*corev1.Pod) []*corev1.Pod {
 	var daemons []*corev1.Pod
+	if s.daemonOverheadCache != nil {
+		if key, ok := nodeCacheKey(node, karpopts.FromContext(ctx).IgnoreDRARequests); ok {
+			if daemons, ok := s.daemonOverheadCache.daemonPods(key); ok {
+				return daemons
+			}
+			defer func() {
+				s.daemonOverheadCache.setDaemonPods(key, daemons)
+			}()
+		}
+	}
 	for _, p := range daemonSetPods {
 		if s.shouldSkipDaemonPod(ctx, p) {
 			continue

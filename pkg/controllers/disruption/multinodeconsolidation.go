@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	"sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
 	scheduler "sigs.k8s.io/karpenter/pkg/scheduling"
 )
 
@@ -51,6 +52,7 @@ func NewMultiNodeConsolidation(c consolidation, opts ...option.Function[MethodOp
 // nolint:gocyclo
 func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruptionBudgetMapping map[string]int, candidates ...*Candidate) ([]Command, error) {
 	ctx = withConsolidationType(ctx, m.ConsolidationType())
+	ctx = scheduling.WithDaemonOverheadCache(ctx, scheduling.NewDaemonOverheadCache())
 	// Depth is the deepest batch actually attempted, so passes that do not
 	// reach simulation (for example, budget-constrained passes) report zero.
 	depth := 0
