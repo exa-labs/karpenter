@@ -57,9 +57,11 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 	ctx = withConsolidationType(ctx, s.ConsolidationType())
 	ctx = scheduling.WithDaemonOverheadCache(ctx, scheduling.NewDaemonOverheadCache())
 	depth := 0
+	evaluatedCandidateDepthByNodePool := map[string]int{}
 	outcome := PassOutcomeNoOp
 	defer func() {
 		ObserveConsolidationPass(s.ConsolidationType(), outcome, depth)
+		ObserveConsolidationCandidateDepthByNodePool(s.ConsolidationType(), evaluatedCandidateDepthByNodePool)
 	}()
 	if s.IsConsolidated() {
 		return []Command{}, nil
@@ -86,6 +88,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 		}
 		// Track that we've seen this nodepool
 		unseenNodePools.Delete(candidate.NodePool.Name)
+		evaluatedCandidateDepthByNodePool[candidate.NodePool.Name]++
 
 		// If the disruption budget doesn't allow this candidate to be disrupted,
 		// continue to the next candidate. We don't need to decrement any budget
