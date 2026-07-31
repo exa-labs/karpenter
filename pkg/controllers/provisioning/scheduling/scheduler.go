@@ -196,7 +196,6 @@ func NewScheduler(
 	}
 	if s.daemonOverheadCache != nil {
 		s.daemonOverheadCache.updateDaemonSetGeneration(daemonSetPods)
-		s.daemonOverheadCache.updateInstanceTypeGeneration(instanceTypes)
 	}
 
 	npByName := lo.SliceToMap(nodePools, func(np *v1.NodePool) (string, *v1.NodePool) {

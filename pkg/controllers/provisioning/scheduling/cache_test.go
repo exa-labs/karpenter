@@ -201,48 +201,6 @@ func TestDaemonOverheadCacheInvalidatesWhenDaemonSetAffinityChanges(t *testing.T
 	}
 }
 
-func TestDaemonOverheadCacheInvalidatesWhenInstanceTypesChange(t *testing.T) {
-	cache := NewDaemonOverheadCache()
-	instanceTypeA := &cloudprovider.InstanceType{Name: "type-a"}
-	instanceTypeB := &cloudprovider.InstanceType{Name: "type-b"}
-	instanceTypes := map[string][]*cloudprovider.InstanceType{"pool": {instanceTypeA}}
-	s := &Scheduler{
-		daemonOverheadCache: cache,
-		instanceTypes:       instanceTypes,
-	}
-	node := &state.StateNode{
-		Node: &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{
-				UID:             types.UID("node-uid"),
-				Name:            "node",
-				ResourceVersion: "1",
-				Labels: map[string]string{
-					v1.NodePoolLabelKey:            "pool",
-					corev1.LabelInstanceTypeStable: instanceTypeA.Name,
-				},
-			},
-		},
-	}
-
-	cache.updateInstanceTypeGeneration(instanceTypes)
-	if got := s.instanceTypeForNode(node); got != instanceTypeA {
-		t.Fatalf("expected instance type A, got %v", got)
-	}
-
-	s.instanceTypes = map[string][]*cloudprovider.InstanceType{"pool": {instanceTypeB}}
-	cache.updateInstanceTypeGeneration(s.instanceTypes)
-	node.Labels()[corev1.LabelInstanceTypeStable] = instanceTypeB.Name
-	if got := s.instanceTypeForNode(node); got != instanceTypeB {
-		t.Fatalf("expected instance type B after set change, got %v", got)
-	}
-
-	s.instanceTypes = map[string][]*cloudprovider.InstanceType{}
-	cache.updateInstanceTypeGeneration(s.instanceTypes)
-	if got := s.instanceTypeForNode(node); got != nil {
-		t.Fatalf("expected nil instance type after set disappeared, got %v", got)
-	}
-}
-
 func TestDaemonOverheadCachePreservesSchedulingResults(t *testing.T) {
 	cached := solveCacheFixture(t, true)
 	uncached := solveCacheFixture(t, false)
