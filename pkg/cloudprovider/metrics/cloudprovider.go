@@ -143,6 +143,27 @@ func (d *decorator) GetInstanceTypes(ctx context.Context, nodePool *v1.NodePool)
 	return instanceType, err
 }
 
+// GetInstanceTypesWithRevision forwards the optional InstanceTypesRevisionProvider interface,
+// reporting the call under the same method label as GetInstanceTypes. When the decorated provider
+// does not implement it, the result is equivalent to GetInstanceTypes with a zero revision.
+func (d *decorator) GetInstanceTypesWithRevision(ctx context.Context, nodePool *v1.NodePool) ([]*cloudprovider.InstanceType, uint64, error) {
+	method := "GetInstanceTypes"
+	defer metrics.Measure(MethodDuration, getLabelsMapForDuration(ctx, d, method))()
+	revisionProvider, ok := d.CloudProvider.(cloudprovider.InstanceTypesRevisionProvider)
+	if !ok {
+		instanceTypes, err := d.CloudProvider.GetInstanceTypes(ctx, nodePool)
+		if err != nil {
+			ErrorsTotal.Inc(getLabelsMapForError(ctx, d, method, err))
+		}
+		return instanceTypes, 0, err
+	}
+	instanceTypes, revision, err := revisionProvider.GetInstanceTypesWithRevision(ctx, nodePool)
+	if err != nil {
+		ErrorsTotal.Inc(getLabelsMapForError(ctx, d, method, err))
+	}
+	return instanceTypes, revision, err
+}
+
 func (d *decorator) IsDrifted(ctx context.Context, nodeClaim *v1.NodeClaim) (cloudprovider.DriftReason, error) {
 	method := "IsDrifted"
 	defer metrics.Measure(MethodDuration, getLabelsMapForDuration(ctx, d, method))()

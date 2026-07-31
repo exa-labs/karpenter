@@ -53,3 +53,26 @@ func (d *decorator) GetInstanceTypes(ctx context.Context, nodePool *v1.NodePool)
 	}
 	return its, nil
 }
+
+// GetInstanceTypesWithRevision forwards the optional InstanceTypesRevisionProvider interface. When
+// the NodeOverlay feature gate is enabled the returned content also depends on the overlay store,
+// which the inner provider's revision does not cover, so the revision is reported as 0 (unstable).
+func (d *decorator) GetInstanceTypesWithRevision(ctx context.Context, nodePool *v1.NodePool) ([]*cloudprovider.InstanceType, uint64, error) {
+	revisionProvider, ok := d.CloudProvider.(cloudprovider.InstanceTypesRevisionProvider)
+	if !ok {
+		its, err := d.GetInstanceTypes(ctx, nodePool)
+		return its, 0, err
+	}
+	its, revision, err := revisionProvider.GetInstanceTypesWithRevision(ctx, nodePool)
+	if err != nil {
+		return []*cloudprovider.InstanceType{}, 0, err
+	}
+	if options.FromContext(ctx).FeatureGates.NodeOverlay {
+		its, err = d.store.ApplyAll(nodePool.Name, its)
+		if err != nil {
+			return []*cloudprovider.InstanceType{}, 0, fmt.Errorf("applying nodeoverlays, %w", err)
+		}
+		return its, 0, nil
+	}
+	return its, revision, nil
+}

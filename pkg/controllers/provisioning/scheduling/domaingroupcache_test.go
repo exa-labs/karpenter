@@ -109,6 +109,66 @@ func TestDomainGroupCacheRecomputesWhenInputsChange(t *testing.T) {
 	}
 }
 
+func TestDomainGroupCacheRevisionFastPath(t *testing.T) {
+	nodePools := []*v1.NodePool{domainGroupCacheNodePool("pool", "uid-1")}
+	instanceTypes := map[string][]*cloudprovider.InstanceType{"pool": domainGroupCacheInstanceTypes("zone-1")}
+
+	ctx := WithDomainGroupCache(context.Background(), NewDomainGroupCache())
+	ctx = WithInstanceTypeRevisions(ctx, map[string]uint64{"pool": 7})
+	first := domainGroupsWithCache(ctx, nodePools, instanceTypes)
+
+	// Same revision: reuse without consulting requirement content. The provider guarantees content
+	// is identical for the same (UID, generation, revision), so a same-length content change here
+	// simulates what the revision contract makes unobservable.
+	instanceTypes["pool"] = domainGroupCacheInstanceTypes("zone-9")
+	sameRevision := domainGroupsWithCache(ctx, nodePools, instanceTypes)
+	if reflect.ValueOf(first).Pointer() != reflect.ValueOf(sameRevision).Pointer() {
+		t.Fatal("expected an unchanged revision to reuse the cached domain groups map")
+	}
+
+	// Revision bump (provider cache refill) must invalidate even though UID/generation are unchanged.
+	ctx = WithInstanceTypeRevisions(ctx, map[string]uint64{"pool": 8})
+	afterRevision := domainGroupsWithCache(ctx, nodePools, instanceTypes)
+	if reflect.ValueOf(first).Pointer() == reflect.ValueOf(afterRevision).Pointer() {
+		t.Fatal("expected a revision change to invalidate the cache")
+	}
+	if _, ok := afterRevision[corev1.LabelTopologyZone]["zone-9"]; !ok {
+		t.Fatal("expected recomputed domain groups to contain the new zone")
+	}
+
+	// Generation change must still invalidate with a constant revision.
+	nodePools[0].Generation = 2
+	afterGeneration := domainGroupsWithCache(ctx, nodePools, instanceTypes)
+	if reflect.ValueOf(afterRevision).Pointer() == reflect.ValueOf(afterGeneration).Pointer() {
+		t.Fatal("expected nodepool generation change to invalidate the cache")
+	}
+}
+
+func TestDomainGroupCacheMixedRevisionsFallBackToContentHashingPerPool(t *testing.T) {
+	nodePools := []*v1.NodePool{
+		domainGroupCacheNodePool("pool", "uid-1"),
+		domainGroupCacheNodePool("pool-2", "uid-2"),
+	}
+	instanceTypes := map[string][]*cloudprovider.InstanceType{
+		"pool":   domainGroupCacheInstanceTypes("zone-1"),
+		"pool-2": domainGroupCacheInstanceTypes("zone-2"),
+	}
+
+	// Only pool has a revision; pool-2 must still be protected by content hashing.
+	ctx := WithDomainGroupCache(context.Background(), NewDomainGroupCache())
+	ctx = WithInstanceTypeRevisions(ctx, map[string]uint64{"pool": 3})
+	first := domainGroupsWithCache(ctx, nodePools, instanceTypes)
+
+	instanceTypes["pool-2"] = domainGroupCacheInstanceTypes("zone-2", "zone-3")
+	afterContentChange := domainGroupsWithCache(ctx, nodePools, instanceTypes)
+	if reflect.ValueOf(first).Pointer() == reflect.ValueOf(afterContentChange).Pointer() {
+		t.Fatal("expected a content change on a revisionless pool to invalidate the cache")
+	}
+	if !reflect.DeepEqual(afterContentChange, buildDomainGroups(nodePools, instanceTypes)) {
+		t.Fatal("expected recomputed domain groups to match an uncached build")
+	}
+}
+
 func TestDomainGroupCacheBypassesUnkeyableInputs(t *testing.T) {
 	nodePools := []*v1.NodePool{domainGroupCacheNodePool("pool", "")} // no UID
 	instanceTypes := map[string][]*cloudprovider.InstanceType{"pool": domainGroupCacheInstanceTypes("zone-1")}

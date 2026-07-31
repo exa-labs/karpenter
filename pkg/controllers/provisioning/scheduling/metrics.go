@@ -39,6 +39,12 @@ const (
 	cacheOutcomeHit    = "hit"
 	cacheOutcomeMiss   = "miss"
 	cacheOutcomeBypass = "bypass"
+
+	modeLabel = "mode"
+
+	fingerprintModeRevision = "revision"
+	fingerprintModeContent  = "content"
+	fingerprintModeMixed    = "mixed"
 )
 
 var (
@@ -126,6 +132,18 @@ var (
 		},
 		[]string{
 			outcomeLabel,
+		},
+	)
+	DomainGroupFingerprintTotal = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: schedulerSubsystem,
+			Name:      "domain_group_fingerprint_total",
+			Help:      "Number of domain group cache fingerprints by mode (revision: cheap provider-revision path, content: full requirement content hashing, mixed: some NodePools had revisions and some did not).",
+		},
+		[]string{
+			modeLabel,
 		},
 	)
 	PendingPodsByEffectiveZone = opmetrics.NewPrometheusGauge(

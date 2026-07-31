@@ -289,8 +289,20 @@ func (p *Provisioner) NewScheduler(
 	nodepoolutils.OrderByWeight(nodePools)
 
 	instanceTypes := map[string][]*cloudprovider.InstanceType{}
+	instanceTypeRevisions := map[string]uint64{}
+	revisionProvider, _ := p.cloudProvider.(cloudprovider.InstanceTypesRevisionProvider)
 	for _, np := range nodePools {
-		its, err := p.cloudProvider.GetInstanceTypes(ctx, np)
+		var its []*cloudprovider.InstanceType
+		var err error
+		if revisionProvider != nil {
+			var revision uint64
+			its, revision, err = revisionProvider.GetInstanceTypesWithRevision(ctx, np)
+			if err == nil && revision != 0 {
+				instanceTypeRevisions[np.Name] = revision
+			}
+		} else {
+			its, err = p.cloudProvider.GetInstanceTypes(ctx, np)
+		}
 		if err != nil {
 			if cloudprovider.IsUnevaluatedNodePoolError(err) {
 				log.FromContext(ctx).WithValues("NodePool", klog.KObj(np)).V(1).Info("skipping, awaiting nodeoverlay evaluation")
@@ -316,6 +328,8 @@ func (p *Provisioner) NewScheduler(
 	if err != nil {
 		return nil, fmt.Errorf("getting volume topology requirements, %w", err)
 	}
+
+	ctx = scheduler.WithInstanceTypeRevisions(ctx, instanceTypeRevisions)
 
 	// Calculate cluster topology, if a context error occurs, it is wrapped and returned
 	topology, err := scheduler.NewTopology(ctx, p.kubeClient, p.cluster, stateNodes, nodePools, instanceTypes, pods, opts...)
