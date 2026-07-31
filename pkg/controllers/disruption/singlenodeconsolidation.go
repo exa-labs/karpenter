@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	"sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
 )
 
 var SingleNodeConsolidationTimeoutDuration = 3 * time.Minute
@@ -54,6 +55,7 @@ func NewSingleNodeConsolidation(c consolidation, opts ...option.Function[MethodO
 // nolint:gocyclo
 func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptionBudgetMapping map[string]int, candidates ...*Candidate) ([]Command, error) {
 	ctx = withConsolidationType(ctx, s.ConsolidationType())
+	ctx = scheduling.WithDaemonOverheadCache(ctx, scheduling.NewDaemonOverheadCache())
 	depth := 0
 	outcome := PassOutcomeNoOp
 	defer func() {
