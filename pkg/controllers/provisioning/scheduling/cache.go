@@ -18,6 +18,10 @@ package scheduling
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,10 +38,13 @@ type daemonOverheadCacheContextKey struct{}
 // DaemonOverheadCache memoizes candidate-invariant existing-node scheduling data for one scheduling pass.
 // The cache must not be shared across passes because node labels and taints can change.
 type DaemonOverheadCache struct {
-	mu                  sync.RWMutex
-	daemonPodsByKey     map[string][]*corev1.Pod
-	instanceTypes       map[string]*cloudprovider.InstanceType
-	daemonSetGeneration string
+	mu                          sync.RWMutex
+	daemonPodsByKey             map[string][]*corev1.Pod
+	instanceTypes               map[string]*cloudprovider.InstanceType
+	daemonSetGeneration         string
+	daemonSetGenerationValid    bool
+	instanceTypeGeneration      string
+	instanceTypeGenerationValid bool
 }
 
 func NewDaemonOverheadCache() *DaemonOverheadCache {
@@ -48,12 +55,24 @@ func NewDaemonOverheadCache() *DaemonOverheadCache {
 }
 
 func (c *DaemonOverheadCache) updateDaemonSetGeneration(daemonSetPods []*corev1.Pod) {
-	generation := daemonSetPodsGeneration(daemonSetPods)
+	generation, ok := daemonSetPodsGeneration(daemonSetPods)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.daemonSetGeneration != generation {
+	if !ok || !c.daemonSetGenerationValid || c.daemonSetGeneration != generation {
 		c.daemonPodsByKey = map[string][]*corev1.Pod{}
 		c.daemonSetGeneration = generation
+		c.daemonSetGenerationValid = ok
+	}
+}
+
+func (c *DaemonOverheadCache) updateInstanceTypeGeneration(instanceTypes map[string][]*cloudprovider.InstanceType) {
+	generation, ok := instanceTypesGeneration(instanceTypes)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !ok || !c.instanceTypeGenerationValid || c.instanceTypeGeneration != generation {
+		c.instanceTypes = map[string]*cloudprovider.InstanceType{}
+		c.instanceTypeGeneration = generation
+		c.instanceTypeGenerationValid = ok
 	}
 }
 
@@ -66,18 +85,38 @@ func DaemonOverheadCacheFromContext(ctx context.Context) *DaemonOverheadCache {
 	return cache
 }
 
-func daemonSetPodsGeneration(daemonSetPods []*corev1.Pod) string {
+func daemonSetPodsGeneration(daemonSetPods []*corev1.Pod) (string, bool) {
 	entries := make([]string, len(daemonSetPods))
 	for i, pod := range daemonSetPods {
-		entries[i] = strings.Join([]string{
-			string(pod.UID),
-			pod.Namespace,
-			pod.Name,
-			pod.ResourceVersion,
-		}, "\x00")
+		content, err := json.Marshal(struct {
+			Namespace string
+			Name      string
+			Spec      corev1.PodSpec
+		}{
+			Namespace: pod.Namespace,
+			Name:      pod.Name,
+			Spec:      pod.Spec,
+		})
+		if err != nil {
+			return "", false
+		}
+		entries[i] = string(content)
 	}
 	sort.Strings(entries)
-	return strings.Join(entries, "\x01")
+	sum := sha256.Sum256([]byte(strings.Join(entries, "\x01")))
+	return hex.EncodeToString(sum[:]), true
+}
+
+func instanceTypesGeneration(instanceTypes map[string][]*cloudprovider.InstanceType) (string, bool) {
+	entries := make([]string, 0)
+	for nodePool, types := range instanceTypes {
+		for _, instanceType := range types {
+			entries = append(entries, fmt.Sprintf("%s\x00%#v", nodePool, instanceType))
+		}
+	}
+	sort.Strings(entries)
+	sum := sha256.Sum256([]byte(strings.Join(entries, "\x01")))
+	return hex.EncodeToString(sum[:]), true
 }
 
 func nodeCacheKey(node *state.StateNode, ignoreDRA bool) (string, bool) {

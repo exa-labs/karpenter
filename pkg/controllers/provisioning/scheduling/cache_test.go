@@ -123,6 +123,126 @@ func TestDaemonOverheadCacheInvalidatesWhenDaemonSetPodsChange(t *testing.T) {
 	}
 }
 
+func TestDaemonOverheadCacheInvalidatesWhenDaemonSetTemplateChangesWithoutLivePod(t *testing.T) {
+	cache := NewDaemonOverheadCache()
+	s := &Scheduler{daemonOverheadCache: cache}
+	node := &state.StateNode{
+		Node: &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				UID:             types.UID("node-uid"),
+				Name:            "node",
+				ResourceVersion: "1",
+				Labels:          map[string]string{"topology.kubernetes.io/zone": "a"},
+			},
+		},
+	}
+	ctx := operatoroptions.ToContext(context.Background(), &operatoroptions.Options{})
+	daemon := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "daemon", Namespace: "default"},
+		Spec: corev1.PodSpec{
+			NodeSelector: map[string]string{"topology.kubernetes.io/zone": "a"},
+		},
+	}
+
+	cache.updateDaemonSetGeneration([]*corev1.Pod{daemon})
+	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), []*corev1.Pod{daemon}); len(got) != 1 {
+		t.Fatalf("expected daemon to be compatible, got %d pods", len(got))
+	}
+
+	daemon.Spec.NodeSelector["topology.kubernetes.io/zone"] = "b"
+	cache.updateDaemonSetGeneration([]*corev1.Pod{daemon})
+	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), []*corev1.Pod{daemon}); len(got) != 0 {
+		t.Fatalf("expected template change to invalidate daemon cache, got %d pods", len(got))
+	}
+}
+
+func TestDaemonOverheadCacheInvalidatesWhenDaemonSetAffinityChanges(t *testing.T) {
+	cache := NewDaemonOverheadCache()
+	s := &Scheduler{daemonOverheadCache: cache}
+	node := &state.StateNode{
+		Node: &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				UID:             types.UID("node-uid"),
+				Name:            "node",
+				ResourceVersion: "1",
+				Labels:          map[string]string{"topology.kubernetes.io/zone": "a"},
+			},
+		},
+	}
+	ctx := operatoroptions.ToContext(context.Background(), &operatoroptions.Options{})
+	daemon := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "daemon", Namespace: "default"},
+		Spec: corev1.PodSpec{
+			Affinity: &corev1.Affinity{
+				NodeAffinity: &corev1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+							MatchExpressions: []corev1.NodeSelectorRequirement{{
+								Key:      "topology.kubernetes.io/zone",
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{"a"},
+							}},
+						}},
+					},
+				},
+			},
+		},
+	}
+
+	cache.updateDaemonSetGeneration([]*corev1.Pod{daemon})
+	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), []*corev1.Pod{daemon}); len(got) != 1 {
+		t.Fatalf("expected daemon to be compatible, got %d pods", len(got))
+	}
+
+	daemon.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchExpressions[0].Values = []string{"b"}
+	cache.updateDaemonSetGeneration([]*corev1.Pod{daemon})
+	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), []*corev1.Pod{daemon}); len(got) != 0 {
+		t.Fatalf("expected affinity change to invalidate daemon cache, got %d pods", len(got))
+	}
+}
+
+func TestDaemonOverheadCacheInvalidatesWhenInstanceTypesChange(t *testing.T) {
+	cache := NewDaemonOverheadCache()
+	instanceTypeA := &cloudprovider.InstanceType{Name: "type-a"}
+	instanceTypeB := &cloudprovider.InstanceType{Name: "type-b"}
+	instanceTypes := map[string][]*cloudprovider.InstanceType{"pool": {instanceTypeA}}
+	s := &Scheduler{
+		daemonOverheadCache: cache,
+		instanceTypes:       instanceTypes,
+	}
+	node := &state.StateNode{
+		Node: &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				UID:             types.UID("node-uid"),
+				Name:            "node",
+				ResourceVersion: "1",
+				Labels: map[string]string{
+					v1.NodePoolLabelKey:            "pool",
+					corev1.LabelInstanceTypeStable: instanceTypeA.Name,
+				},
+			},
+		},
+	}
+
+	cache.updateInstanceTypeGeneration(instanceTypes)
+	if got := s.instanceTypeForNode(node); got != instanceTypeA {
+		t.Fatalf("expected instance type A, got %v", got)
+	}
+
+	s.instanceTypes = map[string][]*cloudprovider.InstanceType{"pool": {instanceTypeB}}
+	cache.updateInstanceTypeGeneration(s.instanceTypes)
+	node.Labels()[corev1.LabelInstanceTypeStable] = instanceTypeB.Name
+	if got := s.instanceTypeForNode(node); got != instanceTypeB {
+		t.Fatalf("expected instance type B after set change, got %v", got)
+	}
+
+	s.instanceTypes = map[string][]*cloudprovider.InstanceType{}
+	cache.updateInstanceTypeGeneration(s.instanceTypes)
+	if got := s.instanceTypeForNode(node); got != nil {
+		t.Fatalf("expected nil instance type after set disappeared, got %v", got)
+	}
+}
+
 func TestDaemonOverheadCachePreservesSchedulingResults(t *testing.T) {
 	cached := solveCacheFixture(t, true)
 	uncached := solveCacheFixture(t, false)
