@@ -812,8 +812,8 @@ func (s *Scheduler) getCompatibleDaemonPods(ctx context.Context, node *state.Sta
 	var daemons []*corev1.Pod
 	if s.daemonOverheadCache != nil {
 		if key, ok := nodeCacheKey(node, karpopts.FromContext(ctx).IgnoreDRARequests); ok {
-			if daemons, ok := s.daemonOverheadCache.daemonPods(key); ok {
-				return daemons
+			if cachedDaemons, ok := s.daemonOverheadCache.daemonPods(key); ok {
+				return cachedDaemons
 			}
 			defer func() {
 				s.daemonOverheadCache.setDaemonPods(key, daemons)

@@ -27,6 +27,7 @@ import (
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 )
@@ -94,22 +95,22 @@ func nodeCacheKey(node *state.StateNode, ignoreDRA bool) (string, bool) {
 	if node == nil || (node.Node == nil && node.NodeClaim == nil) {
 		return "", false
 	}
-	if node.Node != nil && (node.Node.UID == "" || node.Node.ResourceVersion == "") {
-		return "", false
-	}
-	if node.NodeClaim != nil && (node.NodeClaim.UID == "" || node.NodeClaim.ResourceVersion == "") {
-		return "", false
-	}
 
 	nodeUID, nodeResourceVersion := "", ""
 	if node.Node != nil {
-		nodeUID = string(node.Node.UID)
-		nodeResourceVersion = node.Node.ResourceVersion
+		var ok bool
+		nodeUID, nodeResourceVersion, ok = cacheObjectKey(node.Node.UID, node.Node.ResourceVersion)
+		if !ok {
+			return "", false
+		}
 	}
 	nodeClaimUID, nodeClaimResourceVersion := "", ""
 	if node.NodeClaim != nil {
-		nodeClaimUID = string(node.NodeClaim.UID)
-		nodeClaimResourceVersion = node.NodeClaim.ResourceVersion
+		var ok bool
+		nodeClaimUID, nodeClaimResourceVersion, ok = cacheObjectKey(node.NodeClaim.UID, node.NodeClaim.ResourceVersion)
+		if !ok {
+			return "", false
+		}
 	}
 	return strings.Join([]string{
 		nodeUID,
@@ -118,6 +119,13 @@ func nodeCacheKey(node *state.StateNode, ignoreDRA bool) (string, bool) {
 		nodeClaimResourceVersion,
 		strconv.FormatBool(ignoreDRA),
 	}, "\x00"), true
+}
+
+func cacheObjectKey(uid types.UID, resourceVersion string) (string, string, bool) {
+	if uid == "" || resourceVersion == "" {
+		return "", "", false
+	}
+	return string(uid), resourceVersion, true
 }
 
 func (c *DaemonOverheadCache) daemonPods(key string) ([]*corev1.Pod, bool) {
