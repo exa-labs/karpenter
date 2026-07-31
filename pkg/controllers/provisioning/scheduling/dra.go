@@ -128,26 +128,14 @@ func templateSlicesForInstanceType(it *cloudprovider.InstanceType) []dynamicreso
 // instanceTypeForNode resolves the cloud provider instance type backing a node from the scheduler's per-NodePool
 // instance type set. Returns nil when the node is unmanaged or its instance type is not in the current set.
 func (s *Scheduler) instanceTypeForNode(n *state.StateNode) *cloudprovider.InstanceType {
-	var instanceType *cloudprovider.InstanceType
-	if s.daemonOverheadCache != nil {
-		if key, ok := nodeCacheKey(n, false); ok {
-			if instanceType, ok := s.daemonOverheadCache.instanceType(key); ok {
-				return instanceType
-			}
-			defer func() {
-				s.daemonOverheadCache.setInstanceType(key, instanceType)
-			}()
-		}
-	}
 	itName := n.Labels()[corev1.LabelInstanceTypeStable]
 	nodePoolName := n.Labels()[v1.NodePoolLabelKey]
 	if itName == "" || nodePoolName == "" {
 		return nil
 	}
-	instanceType = lo.FindOrElse(s.instanceTypes[nodePoolName], nil, func(it *cloudprovider.InstanceType) bool {
+	return lo.FindOrElse(s.instanceTypes[nodePoolName], nil, func(it *cloudprovider.InstanceType) bool {
 		return it.Name == itName
 	})
-	return instanceType
 }
 
 // draDriversForNodeClaim returns the sorted set of DRA driver names whose devices were allocated to pods scheduled to

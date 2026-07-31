@@ -21,7 +21,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,7 +28,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 )
 
@@ -38,19 +36,15 @@ type daemonOverheadCacheContextKey struct{}
 // DaemonOverheadCache memoizes candidate-invariant existing-node scheduling data for one scheduling pass.
 // The cache must not be shared across passes because node labels and taints can change.
 type DaemonOverheadCache struct {
-	mu                          sync.RWMutex
-	daemonPodsByKey             map[string][]*corev1.Pod
-	instanceTypes               map[string]*cloudprovider.InstanceType
-	daemonSetGeneration         string
-	daemonSetGenerationValid    bool
-	instanceTypeGeneration      string
-	instanceTypeGenerationValid bool
+	mu                       sync.RWMutex
+	daemonPodsByKey          map[string][]*corev1.Pod
+	daemonSetGeneration      string
+	daemonSetGenerationValid bool
 }
 
 func NewDaemonOverheadCache() *DaemonOverheadCache {
 	return &DaemonOverheadCache{
 		daemonPodsByKey: map[string][]*corev1.Pod{},
-		instanceTypes:   map[string]*cloudprovider.InstanceType{},
 	}
 }
 
@@ -62,17 +56,6 @@ func (c *DaemonOverheadCache) updateDaemonSetGeneration(daemonSetPods []*corev1.
 		c.daemonPodsByKey = map[string][]*corev1.Pod{}
 		c.daemonSetGeneration = generation
 		c.daemonSetGenerationValid = ok
-	}
-}
-
-func (c *DaemonOverheadCache) updateInstanceTypeGeneration(instanceTypes map[string][]*cloudprovider.InstanceType) {
-	generation, ok := instanceTypesGeneration(instanceTypes)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !ok || !c.instanceTypeGenerationValid || c.instanceTypeGeneration != generation {
-		c.instanceTypes = map[string]*cloudprovider.InstanceType{}
-		c.instanceTypeGeneration = generation
-		c.instanceTypeGenerationValid = ok
 	}
 }
 
@@ -101,18 +84,6 @@ func daemonSetPodsGeneration(daemonSetPods []*corev1.Pod) (string, bool) {
 			return "", false
 		}
 		entries[i] = string(content)
-	}
-	sort.Strings(entries)
-	sum := sha256.Sum256([]byte(strings.Join(entries, "\x01")))
-	return hex.EncodeToString(sum[:]), true
-}
-
-func instanceTypesGeneration(instanceTypes map[string][]*cloudprovider.InstanceType) (string, bool) {
-	entries := make([]string, 0)
-	for nodePool, types := range instanceTypes {
-		for _, instanceType := range types {
-			entries = append(entries, fmt.Sprintf("%s\x00%#v", nodePool, instanceType))
-		}
 	}
 	sort.Strings(entries)
 	sum := sha256.Sum256([]byte(strings.Join(entries, "\x01")))
@@ -160,17 +131,4 @@ func (c *DaemonOverheadCache) setDaemonPods(key string, pods []*corev1.Pod) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.daemonPodsByKey[key] = pods
-}
-
-func (c *DaemonOverheadCache) instanceType(key string) (*cloudprovider.InstanceType, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	instanceType, ok := c.instanceTypes[key]
-	return instanceType, ok
-}
-
-func (c *DaemonOverheadCache) setInstanceType(key string, instanceType *cloudprovider.InstanceType) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.instanceTypes[key] = instanceType
 }
