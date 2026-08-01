@@ -184,7 +184,7 @@ func NewScheduler(
 			return np.Name, corev1.ResourceList(np.Spec.Limits)
 		}),
 		clock:                   clock,
-		reservationManager:      newReservationManagerTimed(instanceTypes),
+		reservationManager:      newReservationManagerTimed(ctx, instanceTypes),
 		reservedOfferingMode:    option.Resolve(opts...).reservedOfferingMode,
 		preferencePolicy:        option.Resolve(opts...).preferencePolicy,
 		minValuesPolicy:         minValuesPolicy,

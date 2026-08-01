@@ -55,6 +55,7 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 	ctx = scheduling.WithDaemonOverheadCache(ctx, scheduling.NewDaemonOverheadCache())
 	ctx = scheduling.WithDomainGroupCache(ctx, scheduling.NewDomainGroupCache())
 	ctx = scheduling.WithNodeRequirementsCache(ctx, scheduling.NewNodeRequirementsCache())
+	ctx = scheduling.WithReservationCapacityCache(ctx, scheduling.NewReservationCapacityCache())
 	// Depth is the deepest batch actually attempted, so passes that do not
 	// reach simulation (for example, budget-constrained passes) report zero.
 	depth := 0
@@ -119,7 +120,10 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 		m.evaluator.EmitMultiNodeEvents(ctx, cmd, perPoolResults, true)
 	}
 
-	if cmd, err = m.validator.Validate(ctx, cmd, commandValidationDelay); err != nil {
+	validationStart := time.Now()
+	cmd, err = m.validator.Validate(ctx, cmd, commandValidationDelay)
+	observePassStage(ctx, stageValidation, validationStart)
+	if err != nil {
 		if IsValidationError(err) {
 			reason := getValidationFailureReason(err)
 			cmd.EmitRejectedEvents(m.recorder, reason)

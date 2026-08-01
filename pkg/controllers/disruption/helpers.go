@@ -55,7 +55,9 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 	schedulerOpts []scheduling.Options, candidates ...*Candidate,
 ) (scheduling.Results, error) {
 	candidateNames := sets.NewString(lo.Map(candidates, func(t *Candidate, i int) string { return t.Name() })...)
-	nodes := cluster.DeepCopyNodes()
+	stateCopyStart := time.Now()
+	nodes := cluster.SimulationCopyNodes()
+	observePassStage(ctx, stageStateCopy, stateCopyStart)
 	deletingNodes := nodes.Deleting()
 	stateNodes := lo.Filter(nodes.Active(), func(n *state.StateNode, _ int) bool {
 		return !candidateNames.Has(n.Name())
@@ -71,6 +73,7 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 	}
 
 	// start by getting all pending pods
+	podGatherStart := time.Now()
 	pods, err := provisioner.GetPendingPods(ctx)
 	if err != nil {
 		return scheduling.Results{}, fmt.Errorf("determining pending pods, %w", err)
@@ -101,6 +104,7 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 		return scheduling.Results{}, fmt.Errorf("failed to get pods from deleting nodes, %w", err)
 	}
 	pods = append(pods, deletingNodePods...)
+	observePassStage(ctx, stagePodGather, podGatherStart)
 
 	var opts []scheduling.Options
 	if options.FromContext(ctx).PreferencePolicy == options.PreferencePolicyIgnore {
@@ -123,6 +127,7 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 		return scheduling.Results{}, fmt.Errorf("creating scheduler, %w", err)
 	}
 	constructionDuration := time.Since(schedulerStart)
+	observePassStage(ctx, stageConstruction, schedulerStart)
 	if consolidationType := consolidationTypeFromContext(ctx); consolidationType != "" {
 		SchedulerConstructionDurationSeconds.Observe(constructionDuration.Seconds(), map[string]string{
 			ConsolidationTypeLabel: consolidationType,
@@ -139,6 +144,7 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 	if err != nil {
 		return scheduling.Results{}, fmt.Errorf("scheduling pods, %w", err)
 	}
+	observePassStage(ctx, stageSimulation, simulationStart)
 	if consolidationType := consolidationTypeFromContext(ctx); consolidationType != "" {
 		ConsolidationSimulationDurationSeconds.Observe(time.Since(simulationStart).Seconds(), map[string]string{
 			ConsolidationTypeLabel: consolidationType,

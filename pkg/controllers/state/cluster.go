@@ -274,6 +274,17 @@ func (c *Cluster) DeepCopyNodes() StateNodes {
 	})
 }
 
+// SimulationCopyNodes creates simulation-safe copies of all state nodes (see
+// StateNode.SimulationCopy for what is and is not shared with live state).
+func (c *Cluster) SimulationCopyNodes() StateNodes {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return lo.Map(lo.Values(c.nodes), func(n *StateNode, _ int) *StateNode {
+		return n.SimulationCopy()
+	})
+}
+
 // IsNodeNominated returns true if the given node was expected to have a pod bound to it during a recent scheduling
 // batch
 func (c *Cluster) IsNodeNominated(providerID string) bool {

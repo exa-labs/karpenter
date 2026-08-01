@@ -58,6 +58,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 	ctx = scheduling.WithDaemonOverheadCache(ctx, scheduling.NewDaemonOverheadCache())
 	ctx = scheduling.WithDomainGroupCache(ctx, scheduling.NewDomainGroupCache())
 	ctx = scheduling.WithNodeRequirementsCache(ctx, scheduling.NewNodeRequirementsCache())
+	ctx = scheduling.WithReservationCapacityCache(ctx, scheduling.NewReservationCapacityCache())
 	depth := 0
 	evaluatedCandidateDepthByNodePool := map[string]int{}
 	outcome := PassOutcomeNoOp
@@ -125,7 +126,10 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 			ObserveConsolidationCandidateSkip(s.ConsolidationType(), candidate.NodePool.Name, CandidateSkipApprovalRejected)
 			continue
 		}
-		if _, err = s.validator.Validate(ctx, cmd, commandValidationDelay); err != nil {
+		validationStart := time.Now()
+		_, err = s.validator.Validate(ctx, cmd, commandValidationDelay)
+		observePassStage(ctx, stageValidation, validationStart)
+		if err != nil {
 			if IsValidationError(err) {
 				reason := getValidationFailureReason(err)
 				cmd.EmitRejectedEvents(s.recorder, reason)

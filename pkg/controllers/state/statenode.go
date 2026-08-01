@@ -20,6 +20,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/awslabs/operatorpkg/serrors"
@@ -168,6 +169,28 @@ func (in *StateNode) ShallowCopy() *StateNode {
 		podDisruptionCosts: in.podDisruptionCosts,
 		hostPortUsage:      in.hostPortUsage,
 		volumeUsage:        in.volumeUsage,
+		markedForDeletion:  in.markedForDeletion,
+		nominatedUntil:     in.nominatedUntil,
+	}
+}
+
+// SimulationCopy returns a copy of the StateNode that is safe to hand to a scheduling simulation.
+// Simulations only mutate host port and volume usage (via ExistingNode), so only those trackers are
+// deep copied. The Node and NodeClaim objects are shared: cluster state replaces those pointers on
+// update rather than mutating the objects in place. The pod/daemonset resource maps get fresh map
+// shells sharing the inner ResourceLists, which are likewise replaced whole and never mutated in
+// place. The caller must hold the cluster state lock while copying.
+func (in *StateNode) SimulationCopy() *StateNode {
+	return &StateNode{
+		Node:               in.Node,
+		NodeClaim:          in.NodeClaim,
+		daemonSetRequests:  maps.Clone(in.daemonSetRequests),
+		daemonSetLimits:    maps.Clone(in.daemonSetLimits),
+		podRequests:        maps.Clone(in.podRequests),
+		podLimits:          maps.Clone(in.podLimits),
+		podDisruptionCosts: maps.Clone(in.podDisruptionCosts),
+		hostPortUsage:      in.hostPortUsage.DeepCopy(),
+		volumeUsage:        in.volumeUsage.DeepCopy(),
 		markedForDeletion:  in.markedForDeletion,
 		nominatedUntil:     in.nominatedUntil,
 	}
