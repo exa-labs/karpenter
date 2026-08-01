@@ -39,8 +39,14 @@ import (
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	"sigs.k8s.io/karpenter/pkg/metrics"
 	"sigs.k8s.io/karpenter/pkg/operator/injection"
+	"sigs.k8s.io/karpenter/pkg/operator/options"
 	"sigs.k8s.io/karpenter/pkg/utils/resources"
 )
+
+// defaultNodeMetricsInterval guards against a non-positive configured interval: a singleton
+// reconciler only keeps running while it returns a positive RequeueAfter, so returning <= 0 would
+// silently stop node metrics from ever refreshing again.
+const defaultNodeMetricsInterval = 30 * time.Second
 
 const (
 	nodeName  = "node_name"
@@ -57,11 +63,17 @@ var (
 	SystemOverhead      opmetrics.GaugeMetric
 	Lifetime            opmetrics.GaugeMetric
 	ClusterUtilization  opmetrics.GaugeMetric
+
+	// wellKnownLabels maps well-known node label keys to their Prometheus label names. It is
+	// computed once in initializeMetrics (after cloud provider label injection) instead of being
+	// rebuilt for every node on every reconcile.
+	wellKnownLabels map[string]string
 )
 
 // Initialize metrics at runtime to ensure cloud provider's well-known labels are properly
 // injected, preventing race conditions in dependency ordering during label injection for global variable. .
 func initializeMetrics() {
+	wellKnownLabels = getWellKnownLabels()
 	Allocatable = opmetrics.NewPrometheusGauge(
 		crmetrics.Registry,
 		prometheus.GaugeOpts{
@@ -192,7 +204,11 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 
 	c.metricStore.ReplaceAll(metricsMap)
 
-	return reconciler.Result{RequeueAfter: time.Second * 5}, nil
+	interval := options.FromContext(ctx).NodeMetricsInterval
+	if interval <= 0 {
+		interval = defaultNodeMetricsInterval
+	}
+	return reconciler.Result{RequeueAfter: interval}, nil
 }
 
 func (c *Controller) Name() string {
@@ -282,7 +298,7 @@ func getNodeLabels(n *state.StateNode) prometheus.Labels {
 	metricLabels[managed] = strconv.FormatBool(n.Managed())
 
 	// Populate well known labels
-	for wellKnownLabel, label := range getWellKnownLabels() {
+	for wellKnownLabel, label := range wellKnownLabels {
 		metricLabels[label] = node.Labels[wellKnownLabel]
 	}
 	return metricLabels

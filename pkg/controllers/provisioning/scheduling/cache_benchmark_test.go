@@ -29,6 +29,7 @@ import (
 
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	operatoroptions "sigs.k8s.io/karpenter/pkg/operator/options"
+	scheduling "sigs.k8s.io/karpenter/pkg/scheduling"
 )
 
 func BenchmarkDaemonCompatibility800NodesNoCache(b *testing.B) {
@@ -85,7 +86,7 @@ func benchmarkDaemonCompatibility800Nodes(b *testing.B, useCache bool) {
 				if nodeIndex == candidate%len(nodes) {
 					continue
 				}
-				s.getCompatibleDaemonPods(ctx, node, node.Taints(), daemonSetPods)
+				s.getCompatibleDaemonPods(ctx, node, node.Taints(), scheduling.NewLabelRequirements(node.Labels()), daemonSetPods)
 			}
 		}
 	}

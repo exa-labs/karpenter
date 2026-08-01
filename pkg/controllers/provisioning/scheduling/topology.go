@@ -363,6 +363,7 @@ func (t *Topology) updateInverseAntiAffinity(ctx context.Context, pod *corev1.Po
 //nolint:gocyclo
 func (t *Topology) countDomains(ctx context.Context, tg *TopologyGroup) error {
 	podList := &corev1.PodList{}
+	nodeRequirementsCache := NodeRequirementsCacheFromContext(ctx)
 
 	// collect the pods from all the specified namespaces (don't see a way to query multiple namespaces
 	// simultaneously)
@@ -384,7 +385,7 @@ func (t *Topology) countDomains(ctx context.Context, tg *TopologyGroup) error {
 			continue
 		}
 		// ignore the node if it doesn't match the topology group
-		if !tg.nodeFilter.Matches(n.Node.Spec.Taints, scheduling.NewLabelRequirements(n.Node.Labels)) {
+		if !tg.nodeFilter.Matches(n.Node.Spec.Taints, labelRequirementsForNodeObject(nodeRequirementsCache, n.Node)) {
 			continue
 		}
 		domain, exists := n.Labels()[tg.Key]
@@ -431,7 +432,7 @@ func (t *Topology) countDomains(ctx context.Context, tg *TopologyGroup) error {
 				}
 				return serrors.Wrap(fmt.Errorf("getting node, %w", err), "Node", klog.KRef("", p.Spec.NodeName))
 			}
-			nodeRequirements = scheduling.NewLabelRequirements(node.Labels)
+			nodeRequirements = labelRequirementsForNodeObject(nodeRequirementsCache, node)
 
 			// assign back to previous node so we can hopefully re-use these in the next iteration
 			previousNode = node
