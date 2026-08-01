@@ -126,10 +126,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 			ObserveConsolidationCandidateSkip(s.ConsolidationType(), candidate.NodePool.Name, CandidateSkipApprovalRejected)
 			continue
 		}
-		validationStart := time.Now()
-		_, err = s.validator.Validate(ctx, cmd, commandValidationDelay)
-		observePassStage(ctx, stageValidation, validationStart)
-		if err != nil {
+		if _, err = s.validator.Validate(ctx, cmd, commandValidationDelay); err != nil {
 			if IsValidationError(err) {
 				reason := getValidationFailureReason(err)
 				cmd.EmitRejectedEvents(s.recorder, reason)

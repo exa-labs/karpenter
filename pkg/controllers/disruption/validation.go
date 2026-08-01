@@ -198,22 +198,31 @@ func (c *ConsolidationValidator) Validate(ctx context.Context, cmd Command, vali
 
 func (c *ConsolidationValidator) isValid(ctx context.Context, cmd Command, validationPeriod time.Duration) error {
 	if validationPeriod > 0 {
+		waitStart := time.Now()
 		select {
 		case <-ctx.Done():
 			return errors.New("context canceled")
 		case <-c.clock.After(validationPeriod):
 		}
+		observePassStage(ctx, stageValidationWait, waitStart)
 	}
+	candidateValidationStart := time.Now()
 	validatedCandidates, err := c.validateCandidates(ctx, cmd.Candidates...)
+	observePassStage(ctx, stageValidation, candidateValidationStart)
 	if err != nil {
 		return err
 	}
+	// validateCommand runs a nested SimulateScheduling, which accounts for its own time under the
+	// state_copy/pod_gather/scheduler_construction/simulation stages.
 	if err := c.validateCommand(ctx, cmd, validatedCandidates); err != nil {
 		return err
 	}
 	// Revalidate candidates after validating the command. This mitigates the chance of a race condition outlined in
 	// the following GitHub issue: https://github.com/kubernetes-sigs/karpenter/issues/1167.
-	if _, err = c.validateCandidates(ctx, validatedCandidates...); err != nil {
+	revalidationStart := time.Now()
+	_, err = c.validateCandidates(ctx, validatedCandidates...)
+	observePassStage(ctx, stageValidation, revalidationStart)
+	if err != nil {
 		return err
 	}
 	return nil

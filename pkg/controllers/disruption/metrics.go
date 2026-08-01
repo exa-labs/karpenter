@@ -220,7 +220,7 @@ var (
 			Namespace: metrics.Namespace,
 			Subsystem: voluntaryDisruptionSubsystem,
 			Name:      "pass_stage_seconds_total",
-			Help:      "Cumulative wall-clock seconds consolidation passes spent per stage. Rates across stages show how the pass time budget divides between cluster state copying, pod gathering, scheduler construction, simulation solving, and command validation.",
+			Help:      "Cumulative wall-clock seconds consolidation passes spent per stage. Stages are non-overlapping, so rates across stages show how the pass time budget divides between cluster state copying, pod gathering, scheduler construction, simulation solving, candidate validation, and the deliberate validation wait.",
 		},
 		[]string{ConsolidationTypeLabel, stageLabel},
 	)
@@ -335,7 +335,11 @@ const (
 	stagePodGather    = "pod_gather"
 	stageConstruction = "scheduler_construction"
 	stageSimulation   = "simulation"
-	stageValidation   = "validation"
+	// stageValidation covers candidate revalidation only; the nested command re-simulation accounts
+	// for itself under the simulation stages and the deliberate delay under stageValidationWait,
+	// keeping the stages additive.
+	stageValidation     = "validation"
+	stageValidationWait = "validation_wait"
 )
 
 // observePassStage accumulates wall-clock time since start into the pass stage counter. It is a

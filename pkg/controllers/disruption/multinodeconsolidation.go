@@ -120,10 +120,7 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 		m.evaluator.EmitMultiNodeEvents(ctx, cmd, perPoolResults, true)
 	}
 
-	validationStart := time.Now()
-	cmd, err = m.validator.Validate(ctx, cmd, commandValidationDelay)
-	observePassStage(ctx, stageValidation, validationStart)
-	if err != nil {
+	if cmd, err = m.validator.Validate(ctx, cmd, commandValidationDelay); err != nil {
 		if IsValidationError(err) {
 			reason := getValidationFailureReason(err)
 			cmd.EmitRejectedEvents(m.recorder, reason)
