@@ -39,6 +39,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	"sigs.k8s.io/karpenter/pkg/events"
 	operatoroptions "sigs.k8s.io/karpenter/pkg/operator/options"
+	scheduling "sigs.k8s.io/karpenter/pkg/scheduling"
 	"sigs.k8s.io/karpenter/pkg/test"
 )
 
@@ -62,23 +63,23 @@ func TestDaemonOverheadCacheUsesNodeAttributesAndReusesResults(t *testing.T) {
 	}
 	ctx := operatoroptions.ToContext(context.Background(), &operatoroptions.Options{})
 
-	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), []*corev1.Pod{daemon}); len(got) != 1 {
+	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), scheduling.NewLabelRequirements(node.Labels()), []*corev1.Pod{daemon}); len(got) != 1 {
 		t.Fatalf("expected daemon pod to be compatible, got %d pods", len(got))
 	}
 
-	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), []*corev1.Pod{daemon}); len(got) != 1 {
+	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), scheduling.NewLabelRequirements(node.Labels()), []*corev1.Pod{daemon}); len(got) != 1 {
 		t.Fatalf("expected cached result for unchanged node attributes, got %d pods", len(got))
 	}
 
 	node.Labels()["topology.kubernetes.io/zone"] = "b"
 	node.Node.ResourceVersion = "2"
-	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), []*corev1.Pod{daemon}); len(got) != 0 {
+	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), scheduling.NewLabelRequirements(node.Labels()), []*corev1.Pod{daemon}); len(got) != 0 {
 		t.Fatalf("expected daemon pod to be incompatible after node label change, got %d pods", len(got))
 	}
 
 	node.Labels()["topology.kubernetes.io/zone"] = "a"
 	node.Node.ResourceVersion = "1"
-	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), []*corev1.Pod{daemon}); len(got) != 1 {
+	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), scheduling.NewLabelRequirements(node.Labels()), []*corev1.Pod{daemon}); len(got) != 1 {
 		t.Fatalf("expected cached result after restoring node label, got %d pods", len(got))
 	}
 }
@@ -114,12 +115,12 @@ func TestDaemonOverheadCacheInvalidatesWhenDaemonSetPodsChange(t *testing.T) {
 	daemonB.Spec.NodeSelector["topology.kubernetes.io/zone"] = "b"
 
 	cache.updateDaemonSetGeneration([]*corev1.Pod{daemonA})
-	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), []*corev1.Pod{daemonA}); len(got) != 1 {
+	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), scheduling.NewLabelRequirements(node.Labels()), []*corev1.Pod{daemonA}); len(got) != 1 {
 		t.Fatalf("expected daemon A to be compatible, got %d pods", len(got))
 	}
 
 	cache.updateDaemonSetGeneration([]*corev1.Pod{daemonB})
-	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), []*corev1.Pod{daemonB}); len(got) != 0 {
+	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), scheduling.NewLabelRequirements(node.Labels()), []*corev1.Pod{daemonB}); len(got) != 0 {
 		t.Fatalf("expected daemon B to be incompatible after generation change, got %d pods", len(got))
 	}
 }
@@ -146,13 +147,13 @@ func TestDaemonOverheadCacheInvalidatesWhenDaemonSetTemplateChangesWithoutLivePo
 	}
 
 	cache.updateDaemonSetGeneration([]*corev1.Pod{daemon})
-	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), []*corev1.Pod{daemon}); len(got) != 1 {
+	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), scheduling.NewLabelRequirements(node.Labels()), []*corev1.Pod{daemon}); len(got) != 1 {
 		t.Fatalf("expected daemon to be compatible, got %d pods", len(got))
 	}
 
 	daemon.Spec.NodeSelector["topology.kubernetes.io/zone"] = "b"
 	cache.updateDaemonSetGeneration([]*corev1.Pod{daemon})
-	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), []*corev1.Pod{daemon}); len(got) != 0 {
+	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), scheduling.NewLabelRequirements(node.Labels()), []*corev1.Pod{daemon}); len(got) != 0 {
 		t.Fatalf("expected template change to invalidate daemon cache, got %d pods", len(got))
 	}
 }
@@ -191,13 +192,13 @@ func TestDaemonOverheadCacheInvalidatesWhenDaemonSetAffinityChanges(t *testing.T
 	}
 
 	cache.updateDaemonSetGeneration([]*corev1.Pod{daemon})
-	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), []*corev1.Pod{daemon}); len(got) != 1 {
+	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), scheduling.NewLabelRequirements(node.Labels()), []*corev1.Pod{daemon}); len(got) != 1 {
 		t.Fatalf("expected daemon to be compatible, got %d pods", len(got))
 	}
 
 	daemon.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchExpressions[0].Values = []string{"b"}
 	cache.updateDaemonSetGeneration([]*corev1.Pod{daemon})
-	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), []*corev1.Pod{daemon}); len(got) != 0 {
+	if got := s.getCompatibleDaemonPods(ctx, node, node.Taints(), scheduling.NewLabelRequirements(node.Labels()), []*corev1.Pod{daemon}); len(got) != 0 {
 		t.Fatalf("expected affinity change to invalidate daemon cache, got %d pods", len(got))
 	}
 }

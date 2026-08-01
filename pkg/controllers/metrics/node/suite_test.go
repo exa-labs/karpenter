@@ -19,9 +19,11 @@ package node_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -147,6 +149,12 @@ var _ = Describe("Node Metrics", func() {
 			Expect(found).To(BeTrue())
 			Expect(metric.GetGauge().GetValue()).To(BeNumerically("==", 0))
 		}
+	})
+	It("should requeue at the configured node metrics interval", func() {
+		intervalCtx := options.ToContext(ctx, test.Options(test.OptionsFields{NodeMetricsInterval: lo.ToPtr(42 * time.Second)}))
+		result, err := metricsStateController.Reconcile(intervalCtx)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(42 * time.Second))
 	})
 	It("should remove the node metric gauge when the node is deleted", func() {
 		ExpectApplied(ctx, env.Client, node)

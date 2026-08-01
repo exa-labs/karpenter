@@ -44,7 +44,9 @@ type ExistingNode struct {
 	instanceType *cloudprovider.InstanceType
 }
 
-func NewExistingNode(n *state.StateNode, topology *Topology, taints []v1.Taint, daemonResources v1.ResourceList, instanceType *cloudprovider.InstanceType, isUnderConsolidateAfter bool) *ExistingNode {
+// NewExistingNode constructs an ExistingNode. labelRequirements holds the node's label-derived
+// requirements; it may be shared (e.g. from a pass-scoped cache) and is cloned before mutation.
+func NewExistingNode(n *state.StateNode, topology *Topology, taints []v1.Taint, labelRequirements scheduling.Requirements, daemonResources v1.ResourceList, instanceType *cloudprovider.InstanceType, isUnderConsolidateAfter bool) *ExistingNode {
 	// The state node passed in here must be a deep copy from cluster state as we modify it
 	// the remaining daemonResources to schedule are the total daemonResources minus what has already scheduled
 	resources.SubtractFrom(daemonResources, n.DaemonSetRequests())
@@ -64,7 +66,7 @@ func NewExistingNode(n *state.StateNode, topology *Topology, taints []v1.Taint, 
 		cachedTaints:            taints,
 		topology:                topology,
 		remainingResources:      resources.Subtract(available, daemonResources),
-		requirements:            scheduling.NewLabelRequirements(n.Labels()),
+		requirements:            scheduling.NewRequirements(labelRequirements.Values()...),
 		isUnderConsolidateAfter: isUnderConsolidateAfter,
 		instanceType:            instanceType,
 	}

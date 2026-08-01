@@ -193,6 +193,7 @@ func NewScheduler(
 		instanceTypes:           instanceTypes,
 		cachedResourceClaims:    map[types.NamespacedName]*resourcev1.ResourceClaim{},
 		daemonOverheadCache:     DaemonOverheadCacheFromContext(ctx),
+		nodeRequirementsCache:   NodeRequirementsCacheFromContext(ctx),
 	}
 	if s.daemonOverheadCache != nil {
 		s.daemonOverheadCache.updateDaemonSetGeneration(daemonSetPods)
@@ -264,6 +265,8 @@ type Scheduler struct {
 	cachedResourceClaims map[types.NamespacedName]*resourcev1.ResourceClaim
 	// daemonOverheadCache memoizes candidate-invariant existing-node data for one consolidation pass.
 	daemonOverheadCache *DaemonOverheadCache
+	// nodeRequirementsCache memoizes label-derived node requirements for one consolidation pass.
+	nodeRequirementsCache *NodeRequirementsCache
 }
 
 // DRAError indicates a pod will not be attempted to be scheduled because it has Dynamic Resource Allocation requirements
@@ -801,16 +804,17 @@ func (s *Scheduler) calculateExistingNodeClaims(ctx context.Context, stateNodes 
 	// create our existing nodes
 	for _, node := range stateNodes {
 		taints := node.Taints()
-		daemons := s.getCompatibleDaemonPods(ctx, node, taints, daemonSetPods)
+		nodeRequirements := labelRequirementsForStateNode(s.nodeRequirementsCache, node)
+		daemons := s.getCompatibleDaemonPods(ctx, node, taints, nodeRequirements, daemonSetPods)
 		isUnderConsolidateAfter := enforceConsolidateAfter && disruption.IsUnderConsolidateAfter(nodePoolMap[node.Name()], node.NodeClaim, s.clock)
-		s.existingNodes = append(s.existingNodes, NewExistingNode(node, s.topology, taints, resources.RequestsForPods(daemons...), s.instanceTypeForNode(node), isUnderConsolidateAfter))
+		s.existingNodes = append(s.existingNodes, NewExistingNode(node, s.topology, taints, nodeRequirements, resources.RequestsForPods(daemons...), s.instanceTypeForNode(node), isUnderConsolidateAfter))
 		s.updateRemainingResources(node)
 	}
 	s.sortExistingNodes()
 }
 
 // getCompatibleDaemonPods filters daemon pods that can schedule to the given node
-func (s *Scheduler) getCompatibleDaemonPods(ctx context.Context, node *state.StateNode, taints []corev1.Taint, daemonSetPods []*corev1.Pod) []*corev1.Pod {
+func (s *Scheduler) getCompatibleDaemonPods(ctx context.Context, node *state.StateNode, taints []corev1.Taint, nodeRequirements scheduling.Requirements, daemonSetPods []*corev1.Pod) []*corev1.Pod {
 	var daemons []*corev1.Pod
 	if s.daemonOverheadCache != nil {
 		if key, ok := nodeCacheKey(node, karpopts.FromContext(ctx).IgnoreDRARequests); ok {
@@ -826,7 +830,7 @@ func (s *Scheduler) getCompatibleDaemonPods(ctx context.Context, node *state.Sta
 		if s.shouldSkipDaemonPod(ctx, p) {
 			continue
 		}
-		if s.isDaemonPodCompatibleWithNode(p, taints, node.Labels()) {
+		if s.isDaemonPodCompatibleWithNode(p, taints, nodeRequirements) {
 			daemons = append(daemons, p)
 		}
 	}
@@ -839,11 +843,11 @@ func (s *Scheduler) shouldSkipDaemonPod(ctx context.Context, p *corev1.Pod) bool
 }
 
 // isDaemonPodCompatibleWithNode checks if a daemon pod is compatible with the node
-func (s *Scheduler) isDaemonPodCompatibleWithNode(p *corev1.Pod, taints []corev1.Taint, nodeLabels map[string]string) bool {
+func (s *Scheduler) isDaemonPodCompatibleWithNode(p *corev1.Pod, taints []corev1.Taint, nodeRequirements scheduling.Requirements) bool {
 	if err := scheduling.Taints(taints).ToleratesPod(p); err != nil {
 		return false
 	}
-	if err := scheduling.NewLabelRequirements(nodeLabels).Compatible(scheduling.NewStrictPodRequirements(p)); err != nil {
+	if err := nodeRequirements.Compatible(scheduling.NewStrictPodRequirements(p)); err != nil {
 		return false
 	}
 	return true

@@ -134,6 +134,18 @@ var (
 			outcomeLabel,
 		},
 	)
+	NodeRequirementCacheEventsTotal = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: schedulerSubsystem,
+			Name:      "node_requirement_cache_events_total",
+			Help:      "Number of pass-scoped node label requirement cache lookups by outcome (hit, miss, bypass).",
+		},
+		[]string{
+			outcomeLabel,
+		},
+	)
 	DomainGroupFingerprintTotal = opmetrics.NewPrometheusCounter(
 		crmetrics.Registry,
 		prometheus.CounterOpts{

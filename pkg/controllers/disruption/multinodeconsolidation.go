@@ -54,6 +54,7 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 	ctx = withConsolidationType(ctx, m.ConsolidationType())
 	ctx = scheduling.WithDaemonOverheadCache(ctx, scheduling.NewDaemonOverheadCache())
 	ctx = scheduling.WithDomainGroupCache(ctx, scheduling.NewDomainGroupCache())
+	ctx = scheduling.WithNodeRequirementsCache(ctx, scheduling.NewNodeRequirementsCache())
 	// Depth is the deepest batch actually attempted, so passes that do not
 	// reach simulation (for example, budget-constrained passes) report zero.
 	depth := 0
