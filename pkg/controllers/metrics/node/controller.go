@@ -43,6 +43,11 @@ import (
 	"sigs.k8s.io/karpenter/pkg/utils/resources"
 )
 
+// defaultNodeMetricsInterval guards against a non-positive configured interval: a singleton
+// reconciler only keeps running while it returns a positive RequeueAfter, so returning <= 0 would
+// silently stop node metrics from ever refreshing again.
+const defaultNodeMetricsInterval = 30 * time.Second
+
 const (
 	nodeName  = "node_name"
 	nodePhase = "phase"
@@ -199,7 +204,11 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 
 	c.metricStore.ReplaceAll(metricsMap)
 
-	return reconciler.Result{RequeueAfter: options.FromContext(ctx).NodeMetricsInterval}, nil
+	interval := options.FromContext(ctx).NodeMetricsInterval
+	if interval <= 0 {
+		interval = defaultNodeMetricsInterval
+	}
+	return reconciler.Result{RequeueAfter: interval}, nil
 }
 
 func (c *Controller) Name() string {

@@ -156,6 +156,12 @@ var _ = Describe("Node Metrics", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(result.RequeueAfter).To(Equal(42 * time.Second))
 	})
+	It("should fall back to the default interval when configured non-positive", func() {
+		intervalCtx := options.ToContext(ctx, test.Options(test.OptionsFields{NodeMetricsInterval: lo.ToPtr(time.Duration(0))}))
+		result, err := metricsStateController.Reconcile(intervalCtx)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(30 * time.Second))
+	})
 	It("should remove the node metric gauge when the node is deleted", func() {
 		ExpectApplied(ctx, env.Client, node)
 		ExpectReconcileSucceeded(ctx, nodeController, client.ObjectKeyFromObject(node))
