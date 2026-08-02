@@ -136,6 +136,36 @@ func TestNodeClaimTemplateCacheIsolatesObjectMetaMaps(t *testing.T) {
 	}
 }
 
+func TestNodeClaimTemplateCacheIsolatesRequirementMinValues(t *testing.T) {
+	np := domainGroupCacheNodePool("pool", "uid-pool")
+	its := templateCacheInstanceTypes("it-a")
+	ctx := WithNodeClaimTemplateCache(context.Background(), NewNodeClaimTemplateCache())
+	ctx = WithInstanceTypeRevisions(ctx, map[string]uint64{"pool": 7})
+
+	calls := 0
+	minValues := 5
+	build := func() *NodeClaimTemplate {
+		calls++
+		nct := NewNodeClaimTemplate(np)
+		nct.InstanceTypeOptions = its
+		nct.Requirements.Add(scheduling.NewRequirementWithFlexibility(corev1.LabelInstanceTypeStable, corev1.NodeSelectorOpIn, &minValues, "it-a", "it-b"))
+		return nct
+	}
+	first, _ := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyBestEffort, build)
+	// simulate the best-effort relaxation writing MinValues on the requirement in place
+	relaxed := 1
+	first.Requirements.Get(corev1.LabelInstanceTypeStable).MinValues = &relaxed
+
+	second, _ := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyBestEffort, build)
+	if calls != 1 {
+		t.Fatalf("expected build to run once, ran %d times", calls)
+	}
+	got := second.Requirements.Get(corev1.LabelInstanceTypeStable).MinValues
+	if got == nil || *got != 5 {
+		t.Fatalf("expected MinValues relaxation of a previous result to not leak, got %v", got)
+	}
+}
+
 func TestNodeClaimTemplateCacheCachesNegativeResults(t *testing.T) {
 	np := domainGroupCacheNodePool("pool", "uid-pool")
 	ctx := WithNodeClaimTemplateCache(context.Background(), NewNodeClaimTemplateCache())

@@ -104,9 +104,11 @@ func nodeClaimTemplateWithCache(ctx context.Context, np *v1.NodePool, instanceTy
 // copyNodeClaimTemplate returns a shallow struct copy with fresh mutable containers: the
 // Requirements map, the InstanceTypeOptions slice (sorted in place by OrderByPrice during
 // NodeClaim finalization), and the ObjectMeta Labels/Annotations maps (the scheduler writes the
-// min-values-relaxed annotation into a NodeClaim's shared map in place). Individual *Requirement
-// and *InstanceType values are immutable once built (Requirements.Add replaces entries with new
-// Intersection values rather than mutating in place), so sharing them across copies is safe.
+// min-values-relaxed annotation into a NodeClaim's shared map in place). Each *Requirement is
+// struct-copied because the best-effort minValues relaxation path writes MinValues on the
+// requirement in place (Requirements.Add stores incoming pointers verbatim when the key is
+// absent, so the template's requirement objects flow into per-NodeClaim maps); the inner value
+// sets and *InstanceType values are never mutated in place and are shared.
 func copyNodeClaimTemplate(nct *NodeClaimTemplate) *NodeClaimTemplate {
 	out := *nct
 	out.InstanceTypeOptions = slices.Clone(nct.InstanceTypeOptions)
@@ -114,7 +116,8 @@ func copyNodeClaimTemplate(nct *NodeClaimTemplate) *NodeClaimTemplate {
 	out.Annotations = maps.Clone(nct.Annotations)
 	out.Requirements = scheduling.NewRequirements()
 	for _, r := range nct.Requirements {
-		out.Requirements[r.Key] = r
+		cr := *r
+		out.Requirements[cr.Key] = &cr
 	}
 	return &out
 }
