@@ -73,7 +73,8 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 	}
 
 	// start by getting all pending pods
-	podGatherStart := time.Now()
+	endPodGather := startPassStage(ctx, stagePodGather)
+	defer endPodGather()
 	pods, err := provisioner.GetPendingPods(ctx)
 	if err != nil {
 		return scheduling.Results{}, fmt.Errorf("determining pending pods, %w", err)
@@ -104,7 +105,7 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 		return scheduling.Results{}, fmt.Errorf("failed to get pods from deleting nodes, %w", err)
 	}
 	pods = append(pods, deletingNodePods...)
-	observePassStage(ctx, stagePodGather, podGatherStart)
+	endPodGather()
 
 	var opts []scheduling.Options
 	if options.FromContext(ctx).PreferencePolicy == options.PreferencePolicyIgnore {
@@ -116,6 +117,8 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 	// the DRA allocator should treat the devices they hold as available for reallocation (and re-allocate their claims).
 	deletingPodUIDs := sets.New(lo.Map(append(candidatePods, deletingNodePods...), func(p *corev1.Pod, _ int) types.UID { return p.UID })...)
 	schedulerStart := time.Now()
+	endConstruction := startPassStage(ctx, stageConstruction)
+	defer endConstruction()
 	scheduler, err := provisioner.NewScheduler(
 		log.IntoContext(ctx, operatorlogging.NopLogger),
 		pods,
@@ -127,7 +130,7 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 		return scheduling.Results{}, fmt.Errorf("creating scheduler, %w", err)
 	}
 	constructionDuration := time.Since(schedulerStart)
-	observePassStage(ctx, stageConstruction, schedulerStart)
+	endConstruction()
 	if consolidationType := consolidationTypeFromContext(ctx); consolidationType != "" {
 		SchedulerConstructionDurationSeconds.Observe(constructionDuration.Seconds(), map[string]string{
 			ConsolidationTypeLabel: consolidationType,
@@ -140,11 +143,13 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 	})
 
 	simulationStart := time.Now()
+	endSimulation := startPassStage(ctx, stageSimulation)
+	defer endSimulation()
 	results, err := scheduler.Solve(log.IntoContext(ctx, operatorlogging.NopLogger), pods)
+	endSimulation()
 	if err != nil {
 		return scheduling.Results{}, fmt.Errorf("scheduling pods, %w", err)
 	}
-	observePassStage(ctx, stageSimulation, simulationStart)
 	if consolidationType := consolidationTypeFromContext(ctx); consolidationType != "" {
 		ConsolidationSimulationDurationSeconds.Observe(time.Since(simulationStart).Seconds(), map[string]string{
 			ConsolidationTypeLabel: consolidationType,

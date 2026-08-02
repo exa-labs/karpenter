@@ -350,6 +350,18 @@ func observePassStage(ctx context.Context, stage string, start time.Time) {
 	}
 }
 
+// startPassStage starts timing a stage and returns a function that records the elapsed time the
+// first time it is invoked; later invocations are no-ops. Calling it at stage completion and also
+// deferring it keeps stages non-overlapping while still accounting for the budget consumed by
+// stages cut short by an error or timeout.
+func startPassStage(ctx context.Context, stage string) func() {
+	start := time.Now()
+	var once sync.Once
+	return func() {
+		once.Do(func() { observePassStage(ctx, stage, start) })
+	}
+}
+
 func ObserveEligibleNodesByNodePool(candidates []*Candidate, consolidationType, reason string) {
 	scope := labelKeyWithout(map[string]string{
 		metrics.ReasonLabel:    reason,

@@ -35,14 +35,14 @@ type ReservationManager struct {
 
 // newReservationManagerTimed wraps construction with a construction phase duration observation,
 // sourcing the reserved-offering capacity map through the pass-scoped cache when one is available.
-func newReservationManagerTimed(ctx context.Context, instanceTypes map[string][]*cloudprovider.InstanceType) *ReservationManager {
+func newReservationManagerTimed(ctx context.Context, nodePools []*v1.NodePool, instanceTypes map[string][]*cloudprovider.InstanceType) *ReservationManager {
 	start := time.Now()
 	defer func() {
 		ConstructionPhaseDurationSeconds.Observe(time.Since(start).Seconds(), map[string]string{phaseLabel: phaseReservationManager})
 	}()
 	return &ReservationManager{
 		reservations: map[string]sets.Set[string]{},
-		capacity:     reservationCapacityWithCache(ctx, instanceTypes),
+		capacity:     reservationCapacityWithCache(ctx, nodePools, instanceTypes),
 	}
 }
 

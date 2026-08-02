@@ -22,6 +22,7 @@ import (
 	"maps"
 	"sync"
 
+	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 )
 
@@ -32,8 +33,9 @@ type reservationCapacityCacheContextKey struct{}
 // which are candidate-invariant, so consolidation rebuilding a scheduler per candidate rescans an
 // identical offering set every time. The ReservationManager mutates its capacity map while
 // reserving, so cache hits hand out a clone rather than the cached map itself. Fingerprinting
-// relies exclusively on provider instance type revisions: any NodePool without a revision makes the
-// inputs unfingerprintable and bypasses the cache. The cache must not outlive a pass.
+// combines NodePool identity (UID, generation) with provider instance type revisions: any NodePool
+// without a UID or a revision makes the inputs unfingerprintable and bypasses the cache. The cache
+// must not outlive a pass.
 type ReservationCapacityCache struct {
 	mu          sync.Mutex
 	seed        maphash.Seed
@@ -59,12 +61,12 @@ func ReservationCapacityCacheFromContext(ctx context.Context) *ReservationCapaci
 // types, reusing the pass-scoped cached result (cloned, since the caller mutates it) when the
 // inputs are content-identical to the previous construction. Without a cache on the context, or
 // when any NodePool lacks a provider revision, behavior is identical to buildReservationCapacity.
-func reservationCapacityWithCache(ctx context.Context, instanceTypes map[string][]*cloudprovider.InstanceType) map[string]int {
+func reservationCapacityWithCache(ctx context.Context, nodePools []*v1.NodePool, instanceTypes map[string][]*cloudprovider.InstanceType) map[string]int {
 	cache := ReservationCapacityCacheFromContext(ctx)
 	if cache == nil {
 		return buildReservationCapacity(instanceTypes)
 	}
-	fingerprint, ok := cache.fingerprintInputs(instanceTypeRevisionsFromContext(ctx), instanceTypes)
+	fingerprint, ok := cache.fingerprintInputs(instanceTypeRevisionsFromContext(ctx), nodePools, instanceTypes)
 	if !ok {
 		ReservationCapacityCacheEventsTotal.Inc(map[string]string{outcomeLabel: cacheOutcomeBypass})
 		return buildReservationCapacity(instanceTypes)
@@ -84,29 +86,25 @@ func reservationCapacityWithCache(ctx context.Context, instanceTypes map[string]
 }
 
 // fingerprintInputs hashes the per-NodePool instance type identity through provider revisions.
-// A provider revision is guaranteed to change whenever a NodePool's instance type content (offerings
-// included) changes, so (pool name, instance type count, revision) fully covers everything
-// buildReservationCapacity reads. NodePools without a revision cannot be fingerprinted cheaply, so
-// the whole input set is reported unfingerprintable and the caller falls back to a full scan. Pools
-// are hashed order-insensitively because map iteration order is not deterministic.
-func (c *ReservationCapacityCache) fingerprintInputs(revisions map[string]uint64, instanceTypes map[string][]*cloudprovider.InstanceType) (uint64, bool) {
-	var combined uint64
-	for name, its := range instanceTypes {
-		revision, ok := revisions[name]
-		if !ok {
-			return 0, false
-		}
-		var h maphash.Hash
-		h.SetSeed(c.seed)
-		h.WriteString(name)
-		h.WriteByte(0)
-		writeUint64(&h, uint64(len(its)))
-		writeUint64(&h, revision)
-		combined ^= h.Sum64()
-	}
+// A provider revision only guarantees identical instance type content while the NodePool's
+// (UID, generation) also match, so the fingerprint covers NodePool identity the same way the
+// domain group cache does: (UID, generation, instance type count, revision) per pool. NodePools
+// without a UID or a revision cannot be fingerprinted cheaply, so the whole input set is reported
+// unfingerprintable and the caller falls back to a full scan.
+func (c *ReservationCapacityCache) fingerprintInputs(revisions map[string]uint64, nodePools []*v1.NodePool, instanceTypes map[string][]*cloudprovider.InstanceType) (uint64, bool) {
 	var h maphash.Hash
 	h.SetSeed(c.seed)
-	writeUint64(&h, uint64(len(instanceTypes)))
-	writeUint64(&h, combined)
+	writeUint64(&h, uint64(len(nodePools)))
+	for _, np := range nodePools {
+		revision, ok := revisions[np.Name]
+		if !ok || np.UID == "" {
+			return 0, false
+		}
+		h.WriteString(string(np.UID))
+		h.WriteByte(0)
+		writeUint64(&h, uint64(np.Generation)) //nolint:gosec
+		writeUint64(&h, uint64(len(instanceTypes[np.Name])))
+		writeUint64(&h, revision)
+	}
 	return h.Sum64(), true
 }
