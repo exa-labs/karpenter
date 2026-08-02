@@ -319,3 +319,48 @@ func solveCacheFixture(t *testing.T, useCache bool) Results {
 	}
 	return results
 }
+
+func TestDaemonOverheadCacheDaemonRequestsHandsOutIndependentCopies(t *testing.T) {
+	cache := NewDaemonOverheadCache()
+	requests := corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("100m"),
+		corev1.ResourceMemory: resource.MustParse("128Mi"),
+	}
+	cache.setDaemonRequests("key", requests)
+
+	first, ok := cache.daemonRequests("key")
+	if !ok {
+		t.Fatal("expected cached daemon requests")
+	}
+	// simulate NewExistingNode mutating the returned list in place
+	cpu := first[corev1.ResourceCPU]
+	cpu.Sub(resource.MustParse("100m"))
+	first[corev1.ResourceCPU] = cpu
+
+	second, ok := cache.daemonRequests("key")
+	if !ok {
+		t.Fatal("expected cached daemon requests")
+	}
+	if second.Cpu().MilliValue() != 100 {
+		t.Fatalf("expected mutation of a previous result to not leak, got %dm", second.Cpu().MilliValue())
+	}
+
+	// the caller's original map must also be isolated from the cache
+	requests[corev1.ResourceMemory] = resource.MustParse("1Gi")
+	third, _ := cache.daemonRequests("key")
+	if third.Memory().Value() != 128*1024*1024 {
+		t.Fatalf("expected caller mutation to not leak into the cache, got %d", third.Memory().Value())
+	}
+}
+
+func TestDaemonOverheadCacheDaemonRequestsInvalidatesWithGeneration(t *testing.T) {
+	cache := NewDaemonOverheadCache()
+	cache.updateDaemonSetGeneration([]*corev1.Pod{})
+	cache.setDaemonRequests("key", corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")})
+
+	changed := []*corev1.Pod{{Spec: corev1.PodSpec{NodeName: "node"}}}
+	cache.updateDaemonSetGeneration(changed)
+	if _, ok := cache.daemonRequests("key"); ok {
+		t.Fatal("expected daemon requests to be invalidated when the daemonset generation changes")
+	}
+}

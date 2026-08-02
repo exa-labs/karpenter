@@ -35,6 +35,7 @@ const (
 	phaseTopologyUpdate     = "topology_update"
 	phaseReservationManager = "reservation_manager"
 	phaseExistingNodes      = "existing_nodes"
+	phaseNodeClaimTemplates = "node_claim_templates"
 
 	cacheOutcomeHit    = "hit"
 	cacheOutcomeMiss   = "miss"
@@ -153,6 +154,18 @@ var (
 			Subsystem: schedulerSubsystem,
 			Name:      "reservation_capacity_cache_events_total",
 			Help:      "Number of pass-scoped reservation capacity cache lookups by outcome (hit, miss, bypass).",
+		},
+		[]string{
+			outcomeLabel,
+		},
+	)
+	NodeClaimTemplateCacheEventsTotal = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: schedulerSubsystem,
+			Name:      "node_claim_template_cache_events_total",
+			Help:      "Number of pass-scoped NodeClaim template cache lookups by outcome (hit, miss, bypass).",
 		},
 		[]string{
 			outcomeLabel,
