@@ -100,6 +100,42 @@ func TestNodeClaimTemplateCacheHandsOutIndependentCopies(t *testing.T) {
 	}
 }
 
+func TestNodeClaimTemplateCacheIsolatesObjectMetaMaps(t *testing.T) {
+	np := domainGroupCacheNodePool("pool", "uid-pool")
+	its := templateCacheInstanceTypes("it-a")
+	ctx := WithNodeClaimTemplateCache(context.Background(), NewNodeClaimTemplateCache())
+	ctx = WithInstanceTypeRevisions(ctx, map[string]uint64{"pool": 7})
+
+	calls := 0
+	build := func() *NodeClaimTemplate {
+		calls++
+		nct := NewNodeClaimTemplate(np)
+		nct.InstanceTypeOptions = its
+		nct.Annotations = map[string]string{"existing": "value"}
+		nct.Labels = map[string]string{"existing": "value"}
+		return nct
+	}
+	first, _ := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, build)
+	// simulate the scheduler writing the min-values-relaxed annotation into a NodeClaim
+	// that shallow-copied this template
+	first.Annotations[v1.NodeClaimMinValuesRelaxedAnnotationKey] = "true"
+	first.Labels["mutated"] = "true"
+
+	second, _ := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, build)
+	if calls != 1 {
+		t.Fatalf("expected build to run once, ran %d times", calls)
+	}
+	if _, ok := second.Annotations[v1.NodeClaimMinValuesRelaxedAnnotationKey]; ok {
+		t.Fatal("expected annotation mutation of a previous result to not leak")
+	}
+	if _, ok := second.Labels["mutated"]; ok {
+		t.Fatal("expected label mutation of a previous result to not leak")
+	}
+	if second.Annotations["existing"] != "value" || second.Labels["existing"] != "value" {
+		t.Fatal("expected pre-existing ObjectMeta entries to be preserved")
+	}
+}
+
 func TestNodeClaimTemplateCacheCachesNegativeResults(t *testing.T) {
 	np := domainGroupCacheNodePool("pool", "uid-pool")
 	ctx := WithNodeClaimTemplateCache(context.Background(), NewNodeClaimTemplateCache())

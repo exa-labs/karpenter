@@ -19,6 +19,7 @@ package scheduling
 import (
 	"context"
 	"hash/maphash"
+	"maps"
 	"slices"
 	"sync"
 
@@ -100,15 +101,17 @@ func nodeClaimTemplateWithCache(ctx context.Context, np *v1.NodePool, instanceTy
 	return nct, nct != nil
 }
 
-// copyNodeClaimTemplate returns a shallow struct copy with a fresh Requirements map and a fresh
-// InstanceTypeOptions slice. Individual *Requirement and *InstanceType values are immutable once
-// built (Requirements.Add replaces entries with new Intersection values rather than mutating in
-// place), so sharing them across copies is safe — but the InstanceTypeOptions slice itself is
-// sorted in place by OrderByPrice during NodeClaim finalization, and the Requirements map must
-// never be aliased, so both containers are cloned.
+// copyNodeClaimTemplate returns a shallow struct copy with fresh mutable containers: the
+// Requirements map, the InstanceTypeOptions slice (sorted in place by OrderByPrice during
+// NodeClaim finalization), and the ObjectMeta Labels/Annotations maps (the scheduler writes the
+// min-values-relaxed annotation into a NodeClaim's shared map in place). Individual *Requirement
+// and *InstanceType values are immutable once built (Requirements.Add replaces entries with new
+// Intersection values rather than mutating in place), so sharing them across copies is safe.
 func copyNodeClaimTemplate(nct *NodeClaimTemplate) *NodeClaimTemplate {
 	out := *nct
 	out.InstanceTypeOptions = slices.Clone(nct.InstanceTypeOptions)
+	out.Labels = maps.Clone(nct.Labels)
+	out.Annotations = maps.Clone(nct.Annotations)
 	out.Requirements = scheduling.NewRequirements()
 	for _, r := range nct.Requirements {
 		out.Requirements[r.Key] = r
