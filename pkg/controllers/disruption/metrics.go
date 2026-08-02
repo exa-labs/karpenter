@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	opmetrics "github.com/awslabs/operatorpkg/metrics"
 	"github.com/prometheus/client_golang/prometheus"
@@ -36,6 +37,7 @@ const (
 	voluntaryDisruptionSubsystem = "voluntary_disruption"
 	decisionLabel                = "decision"
 	ConsolidationTypeLabel       = "consolidation_type"
+	stageLabel                   = "stage"
 	CandidatesIneligible         = "candidates_ineligible"
 	policyLabel                  = "policy"
 	outcomeLabel                 = "outcome"
@@ -212,6 +214,16 @@ var (
 		},
 		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel},
 	)
+	PassStageSecondsTotal = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "pass_stage_seconds_total",
+			Help:      "Cumulative wall-clock seconds consolidation passes spent per stage. Stages are non-overlapping, so rates across stages show how the pass time budget divides between cluster state copying, pod gathering, scheduler construction, simulation solving, candidate validation, and the deliberate validation wait.",
+		},
+		[]string{ConsolidationTypeLabel, stageLabel},
+	)
 	SchedulerConstructionDurationSeconds = opmetrics.NewPrometheusHistogram(
 		crmetrics.Registry,
 		prometheus.HistogramOpts{
@@ -316,6 +328,38 @@ type eligibleNodePoolSeries struct {
 	labels map[string]string
 	scope  string
 	count  int
+}
+
+const (
+	stageStateCopy    = "state_copy"
+	stagePodGather    = "pod_gather"
+	stageConstruction = "scheduler_construction"
+	stageSimulation   = "simulation"
+	// stageValidation covers candidate revalidation only; the nested command re-simulation accounts
+	// for itself under the simulation stages and the deliberate delay under stageValidationWait,
+	// keeping the stages additive.
+	stageValidation     = "validation"
+	stageValidationWait = "validation_wait"
+)
+
+// observePassStage accumulates wall-clock time since start into the pass stage counter. It is a
+// no-op outside a consolidation pass (no consolidation type on the context).
+func observePassStage(ctx context.Context, stage string, start time.Time) {
+	if consolidationType := consolidationTypeFromContext(ctx); consolidationType != "" {
+		PassStageSecondsTotal.Add(time.Since(start).Seconds(), map[string]string{ConsolidationTypeLabel: consolidationType, stageLabel: stage})
+	}
+}
+
+// startPassStage starts timing a stage and returns a function that records the elapsed time the
+// first time it is invoked; later invocations are no-ops. Calling it at stage completion and also
+// deferring it keeps stages non-overlapping while still accounting for the budget consumed by
+// stages cut short by an error or timeout.
+func startPassStage(ctx context.Context, stage string) func() {
+	start := time.Now()
+	var once sync.Once
+	return func() {
+		once.Do(func() { observePassStage(ctx, stage, start) })
+	}
 }
 
 func ObserveEligibleNodesByNodePool(candidates []*Candidate, consolidationType, reason string) {

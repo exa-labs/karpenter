@@ -146,6 +146,18 @@ var (
 			outcomeLabel,
 		},
 	)
+	ReservationCapacityCacheEventsTotal = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: schedulerSubsystem,
+			Name:      "reservation_capacity_cache_events_total",
+			Help:      "Number of pass-scoped reservation capacity cache lookups by outcome (hit, miss, bypass).",
+		},
+		[]string{
+			outcomeLabel,
+		},
+	)
 	DomainGroupFingerprintTotal = opmetrics.NewPrometheusCounter(
 		crmetrics.Registry,
 		prometheus.CounterOpts{

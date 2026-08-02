@@ -17,6 +17,7 @@ limitations under the License.
 package scheduling
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -32,16 +33,29 @@ type ReservationManager struct {
 	capacity     map[string]int              // reservation id -> count
 }
 
-// newReservationManagerTimed wraps NewReservationManager with a construction phase duration observation.
-func newReservationManagerTimed(instanceTypes map[string][]*cloudprovider.InstanceType) *ReservationManager {
+// newReservationManagerTimed wraps construction with a construction phase duration observation,
+// sourcing the reserved-offering capacity map through the pass-scoped cache when one is available.
+func newReservationManagerTimed(ctx context.Context, nodePools []*v1.NodePool, instanceTypes map[string][]*cloudprovider.InstanceType) *ReservationManager {
 	start := time.Now()
 	defer func() {
 		ConstructionPhaseDurationSeconds.Observe(time.Since(start).Seconds(), map[string]string{phaseLabel: phaseReservationManager})
 	}()
-	return NewReservationManager(instanceTypes)
+	return &ReservationManager{
+		reservations: map[string]sets.Set[string]{},
+		capacity:     reservationCapacityWithCache(ctx, nodePools, instanceTypes),
+	}
 }
 
 func NewReservationManager(instanceTypes map[string][]*cloudprovider.InstanceType) *ReservationManager {
+	return &ReservationManager{
+		reservations: map[string]sets.Set[string]{},
+		capacity:     buildReservationCapacity(instanceTypes),
+	}
+}
+
+// buildReservationCapacity scans every offering of every instance type for reserved capacity,
+// tracking the smallest observed capacity per reservation ID.
+func buildReservationCapacity(instanceTypes map[string][]*cloudprovider.InstanceType) map[string]int {
 	capacity := map[string]int{}
 	for _, its := range instanceTypes {
 		for _, it := range its {
@@ -63,10 +77,7 @@ func NewReservationManager(instanceTypes map[string][]*cloudprovider.InstanceTyp
 			}
 		}
 	}
-	return &ReservationManager{
-		reservations: map[string]sets.Set[string]{},
-		capacity:     capacity,
-	}
+	return capacity
 }
 
 // Should always be idempotent
