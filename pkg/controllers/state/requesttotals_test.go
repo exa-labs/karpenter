@@ -124,9 +124,16 @@ func TestRequestTotalsSharedWithSimulationCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The prefilled memoized total (as SimulationCopyNodes does under the write lock) is shared
+	// by the copy; without a prefill the copy computes its own without writing to the live node.
+	unprefilled := n.SimulationCopy()
+	if unprefilled.podRequestsTotal == nil || n.podRequestsTotal != nil {
+		t.Fatal("expected an unprefilled SimulationCopy to compute totals without writing back")
+	}
+	n.ensureRequestTotals()
 	sim := n.SimulationCopy()
 	if sim.podRequestsTotal == nil || n.podRequestsTotal == nil {
-		t.Fatal("expected SimulationCopy to fill and share the memoized totals")
+		t.Fatal("expected SimulationCopy to share the prefilled memoized totals")
 	}
 	if cpuMilli(sim.PodRequests()) != 100 {
 		t.Fatalf("unexpected copy pod requests: %v", sim.PodRequests())

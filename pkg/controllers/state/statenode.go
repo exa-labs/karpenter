@@ -190,7 +190,6 @@ func (in *StateNode) ShallowCopy() *StateNode {
 // shells sharing the inner ResourceLists, which are likewise replaced whole and never mutated in
 // place. The caller must hold the cluster state lock while copying.
 func (in *StateNode) SimulationCopy() *StateNode {
-	in.ensureRequestTotals()
 	return &StateNode{
 		Node:                   in.Node,
 		NodeClaim:              in.NodeClaim,
@@ -199,8 +198,8 @@ func (in *StateNode) SimulationCopy() *StateNode {
 		podRequests:            maps.Clone(in.podRequests),
 		podLimits:              maps.Clone(in.podLimits),
 		podDisruptionCosts:     maps.Clone(in.podDisruptionCosts),
-		podRequestsTotal:       in.podRequestsTotal,
-		daemonSetRequestsTotal: in.daemonSetRequestsTotal,
+		podRequestsTotal:       in.podRequestsTotalOrCompute(),
+		daemonSetRequestsTotal: in.daemonSetRequestsTotalOrCompute(),
 		hostPortUsage:          in.hostPortUsage.DeepCopy(),
 		volumeUsage:            in.volumeUsage.DeepCopy(),
 		markedForDeletion:      in.markedForDeletion,
@@ -209,7 +208,8 @@ func (in *StateNode) SimulationCopy() *StateNode {
 }
 
 // ensureRequestTotals fills the memoized request sums if they have not been computed since the
-// last pod update. The caller must hold the cluster state lock.
+// last pod update. The caller must hold the cluster state write lock, since this writes to the
+// live node.
 func (in *StateNode) ensureRequestTotals() {
 	if in.podRequestsTotal == nil {
 		in.podRequestsTotal = resources.Merge(lo.Values(in.podRequests)...)
@@ -217,6 +217,23 @@ func (in *StateNode) ensureRequestTotals() {
 	if in.daemonSetRequestsTotal == nil {
 		in.daemonSetRequestsTotal = resources.Merge(lo.Values(in.daemonSetRequests)...)
 	}
+}
+
+// podRequestsTotalOrCompute returns the memoized pod request sum when filled, computing it fresh
+// otherwise without writing to the receiver (safe under the cluster state read lock).
+func (in *StateNode) podRequestsTotalOrCompute() corev1.ResourceList {
+	if in.podRequestsTotal != nil {
+		return in.podRequestsTotal
+	}
+	return resources.Merge(lo.Values(in.podRequests)...)
+}
+
+// daemonSetRequestsTotalOrCompute is the daemonset counterpart of podRequestsTotalOrCompute.
+func (in *StateNode) daemonSetRequestsTotalOrCompute() corev1.ResourceList {
+	if in.daemonSetRequestsTotal != nil {
+		return in.daemonSetRequestsTotal
+	}
+	return resources.Merge(lo.Values(in.daemonSetRequests)...)
 }
 
 func (in *StateNode) Name() string {
