@@ -60,6 +60,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 	ctx = scheduling.WithNodeRequirementsCache(ctx, scheduling.NewNodeRequirementsCache())
 	ctx = scheduling.WithReservationCapacityCache(ctx, scheduling.NewReservationCapacityCache())
 	ctx = scheduling.WithNodeClaimTemplateCache(ctx, scheduling.NewNodeClaimTemplateCache())
+	ctx = scheduling.WithTopologyPassCache(ctx, scheduling.NewTopologyPassCache())
 	depth := 0
 	evaluatedCandidateDepthByNodePool := map[string]int{}
 	outcome := PassOutcomeNoOp

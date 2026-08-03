@@ -207,6 +207,11 @@ func (c *ConsolidationValidator) isValid(ctx context.Context, cmd Command, valid
 		case <-c.clock.After(validationPeriod):
 		}
 		endWaitStage()
+		// The wait exists to observe churn, so the post-wait re-simulation must not reuse
+		// topology pod/node reads pinned earlier in the pass.
+		if scheduling.TopologyPassCacheFromContext(ctx) != nil {
+			ctx = scheduling.WithTopologyPassCache(ctx, scheduling.NewTopologyPassCache())
+		}
 	}
 	candidateValidationStart := time.Now()
 	validatedCandidates, err := c.validateCandidates(ctx, cmd.Candidates...)

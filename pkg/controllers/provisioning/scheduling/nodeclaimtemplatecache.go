@@ -95,6 +95,8 @@ func nodeClaimTemplateWithCache(ctx context.Context, np *v1.NodePool, instanceTy
 	nct := build()
 	var cached *NodeClaimTemplate
 	if nct != nil {
+		nct.cacheFingerprint = fingerprint
+		nct.cacheFingerprintValid = true
 		cached = copyNodeClaimTemplate(nct)
 	}
 	cache.entries[np.Name] = nodeClaimTemplateCacheEntry{fingerprint: fingerprint, template: cached}

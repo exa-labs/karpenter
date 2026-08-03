@@ -120,6 +120,20 @@ func (in *StateNode) DeepCopyInto(out *StateNode) {
 			(*out)[key] = val
 		}
 	}
+	if in.podRequestsTotal != nil {
+		in, out := &in.podRequestsTotal, &out.podRequestsTotal
+		*out = make(v1.ResourceList, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val.DeepCopy()
+		}
+	}
+	if in.daemonSetRequestsTotal != nil {
+		in, out := &in.daemonSetRequestsTotal, &out.daemonSetRequestsTotal
+		*out = make(v1.ResourceList, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val.DeepCopy()
+		}
+	}
 	if in.hostPortUsage != nil {
 		in, out := &in.hostPortUsage, &out.hostPortUsage
 		*out = new(scheduling.HostPortUsage)

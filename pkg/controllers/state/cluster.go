@@ -276,7 +276,17 @@ func (c *Cluster) DeepCopyNodes() StateNodes {
 
 // SimulationCopyNodes creates simulation-safe copies of all state nodes (see
 // StateNode.SimulationCopy for what is and is not shared with live state).
+// The memoized request totals are prefilled under a brief write lock (a no-op
+// once filled), then the bulk copy runs under the read lock so other readers
+// are not blocked; a node invalidated between the two locks just computes its
+// totals into the copy without writing back.
 func (c *Cluster) SimulationCopyNodes() StateNodes {
+	c.mu.Lock()
+	for _, n := range c.nodes {
+		n.ensureRequestTotals()
+	}
+	c.mu.Unlock()
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -710,16 +720,18 @@ func (c *Cluster) newStateFromNodeClaim(nodeClaim *v1.NodeClaim, oldNode *StateN
 		oldNode = NewNode()
 	}
 	n := &StateNode{
-		Node:              oldNode.Node,
-		NodeClaim:         nodeClaim,
-		daemonSetRequests: oldNode.daemonSetRequests,
-		daemonSetLimits:   oldNode.daemonSetLimits,
-		podRequests:       oldNode.podRequests,
-		podLimits:         oldNode.podLimits,
-		hostPortUsage:     oldNode.hostPortUsage,
-		volumeUsage:       oldNode.volumeUsage,
-		markedForDeletion: oldNode.markedForDeletion,
-		nominatedUntil:    oldNode.nominatedUntil,
+		Node:                   oldNode.Node,
+		NodeClaim:              nodeClaim,
+		daemonSetRequests:      oldNode.daemonSetRequests,
+		daemonSetLimits:        oldNode.daemonSetLimits,
+		podRequests:            oldNode.podRequests,
+		podLimits:              oldNode.podLimits,
+		podRequestsTotal:       oldNode.podRequestsTotal,
+		daemonSetRequestsTotal: oldNode.daemonSetRequestsTotal,
+		hostPortUsage:          oldNode.hostPortUsage,
+		volumeUsage:            oldNode.volumeUsage,
+		markedForDeletion:      oldNode.markedForDeletion,
+		nominatedUntil:         oldNode.nominatedUntil,
 	}
 	// Cleanup the old nodeClaim with its old providerID if its providerID changes
 	// This can happen since nodes don't get created with providerIDs. Rather, CCM picks up the

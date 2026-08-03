@@ -61,6 +61,13 @@ type NodeClaimTemplate struct {
 	InstanceTypeOptions cloudprovider.InstanceTypes
 	Requirements        scheduling.Requirements
 	IsStaticNodeClaim   bool
+
+	// cacheFingerprint identifies the candidate-invariant inputs (NodePool identity, provider
+	// instance type revision, minValues policy) this template was built from. It is only set when
+	// the template went through the pass-scoped NodeClaimTemplateCache, and lets downstream
+	// pass-scoped caches (e.g. daemon overhead groups) key derived data on the same invalidation.
+	cacheFingerprint      uint64
+	cacheFingerprintValid bool
 }
 
 func NewNodeClaimTemplate(nodePool *v1.NodePool) *NodeClaimTemplate {

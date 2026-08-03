@@ -125,6 +125,37 @@ func labelRequirementsForStateNode(cache *NodeRequirementsCache, node *state.Sta
 	return requirements
 }
 
+// existingNodeRequirementsForStateNode returns the shared, read-only requirements used to
+// construct an ExistingNode: the node's label requirements plus its hostname requirement. The
+// merged map is a pure function of the node's labels and hostname, both covered by the node/
+// NodeClaim resource versions in the cache key, so it can be shared across every candidate
+// simulation within a pass. ExistingNode never mutates its requirements map in place after
+// construction (scheduling replaces the map wholesale), which is what makes sharing safe.
+func existingNodeRequirementsForStateNode(cache *NodeRequirementsCache, node *state.StateNode, labelRequirements scheduling.Requirements) scheduling.Requirements {
+	build := func() scheduling.Requirements {
+		requirements := scheduling.NewRequirements(labelRequirements.Values()...)
+		requirements.Add(scheduling.NewRequirement(corev1.LabelHostname, corev1.NodeSelectorOpIn, node.HostName()))
+		return requirements
+	}
+	if cache == nil {
+		return build()
+	}
+	key, ok := stateNodeRequirementsKey(node)
+	if !ok {
+		NodeRequirementCacheEventsTotal.Inc(map[string]string{outcomeLabel: cacheOutcomeBypass})
+		return build()
+	}
+	key = "h\x00" + key
+	if requirements, ok := cache.requirements(key); ok {
+		NodeRequirementCacheEventsTotal.Inc(map[string]string{outcomeLabel: cacheOutcomeHit})
+		return requirements
+	}
+	requirements := build()
+	cache.setRequirements(key, requirements)
+	NodeRequirementCacheEventsTotal.Inc(map[string]string{outcomeLabel: cacheOutcomeMiss})
+	return requirements
+}
+
 // labelRequirementsForNodeObject returns the shared, read-only label requirements for a Node object.
 func labelRequirementsForNodeObject(cache *NodeRequirementsCache, node *corev1.Node) scheduling.Requirements {
 	if cache == nil {

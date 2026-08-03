@@ -28,11 +28,9 @@ import (
 	"github.com/samber/lo"
 	"go.uber.org/multierr"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -362,17 +360,17 @@ func (t *Topology) updateInverseAntiAffinity(ctx context.Context, pod *corev1.Po
 //
 //nolint:gocyclo
 func (t *Topology) countDomains(ctx context.Context, tg *TopologyGroup) error {
-	podList := &corev1.PodList{}
 	nodeRequirementsCache := NodeRequirementsCacheFromContext(ctx)
 
 	// collect the pods from all the specified namespaces (don't see a way to query multiple namespaces
 	// simultaneously)
 	var pods []corev1.Pod
 	for _, ns := range tg.namespaces.UnsortedList() {
-		if err := t.kubeClient.List(ctx, podList, TopologyListOptions(ns, tg.rawSelector)); err != nil {
+		nsPods, err := listTopologyPods(ctx, t.kubeClient, ns, tg.rawSelector)
+		if err != nil {
 			return fmt.Errorf("listing pods, %w", err)
 		}
-		pods = append(pods, podList.Items...)
+		pods = append(pods, nsPods...)
 	}
 
 	// capture new domain values from existing nodes that may not have any pods selected by the topology group
@@ -420,17 +418,18 @@ func (t *Topology) countDomains(ctx context.Context, tg *TopologyGroup) error {
 			node = previousNode
 			nodeRequirements = previousNodeRequirements
 		} else {
-			node = &corev1.Node{}
-			if err := t.kubeClient.Get(ctx, types.NamespacedName{Name: p.Spec.NodeName}, node); err != nil {
-				// Pods that cannot be evicted can be leaked in the API Server after
-				// a Node is removed. Since pod bindings are immutable, these pods
-				// cannot be recovered, and will be deleted by the pod lifecycle
-				// garbage collector. These pods are not running, and should not
-				// impact future topology calculations.
-				if errors.IsNotFound(err) {
-					continue
-				}
+			var err error
+			node, err = getTopologyNode(ctx, t.kubeClient, p.Spec.NodeName)
+			if err != nil {
 				return serrors.Wrap(fmt.Errorf("getting node, %w", err), "Node", klog.KRef("", p.Spec.NodeName))
+			}
+			// Pods that cannot be evicted can be leaked in the API Server after
+			// a Node is removed. Since pod bindings are immutable, these pods
+			// cannot be recovered, and will be deleted by the pod lifecycle
+			// garbage collector. These pods are not running, and should not
+			// impact future topology calculations.
+			if node == nil {
+				continue
 			}
 			nodeRequirements = labelRequirementsForNodeObject(nodeRequirementsCache, node)
 

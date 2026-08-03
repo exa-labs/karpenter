@@ -137,6 +137,13 @@ type StateNode struct {
 	podLimits          map[types.NamespacedName]corev1.ResourceList
 	podDisruptionCosts map[types.NamespacedName]float64
 
+	// podRequestsTotal and daemonSetRequestsTotal memoize the summed pod/daemonset requests.
+	// nil means "not computed": any pod update invalidates them, and SimulationCopy fills them
+	// under the cluster lock so every candidate simulation in a pass shares one precomputed sum
+	// instead of re-merging per-pod resource lists. Once filled they are read-only.
+	podRequestsTotal       corev1.ResourceList
+	daemonSetRequestsTotal corev1.ResourceList
+
 	hostPortUsage *scheduling.HostPortUsage
 	volumeUsage   *scheduling.VolumeUsage
 
@@ -160,17 +167,19 @@ func NewNode() *StateNode {
 
 func (in *StateNode) ShallowCopy() *StateNode {
 	return &StateNode{
-		Node:               in.Node,
-		NodeClaim:          in.NodeClaim,
-		daemonSetRequests:  in.daemonSetRequests,
-		daemonSetLimits:    in.daemonSetLimits,
-		podRequests:        in.podRequests,
-		podLimits:          in.podLimits,
-		podDisruptionCosts: in.podDisruptionCosts,
-		hostPortUsage:      in.hostPortUsage,
-		volumeUsage:        in.volumeUsage,
-		markedForDeletion:  in.markedForDeletion,
-		nominatedUntil:     in.nominatedUntil,
+		Node:                   in.Node,
+		NodeClaim:              in.NodeClaim,
+		daemonSetRequests:      in.daemonSetRequests,
+		daemonSetLimits:        in.daemonSetLimits,
+		podRequests:            in.podRequests,
+		podLimits:              in.podLimits,
+		podDisruptionCosts:     in.podDisruptionCosts,
+		podRequestsTotal:       in.podRequestsTotal,
+		daemonSetRequestsTotal: in.daemonSetRequestsTotal,
+		hostPortUsage:          in.hostPortUsage,
+		volumeUsage:            in.volumeUsage,
+		markedForDeletion:      in.markedForDeletion,
+		nominatedUntil:         in.nominatedUntil,
 	}
 }
 
@@ -182,18 +191,49 @@ func (in *StateNode) ShallowCopy() *StateNode {
 // place. The caller must hold the cluster state lock while copying.
 func (in *StateNode) SimulationCopy() *StateNode {
 	return &StateNode{
-		Node:               in.Node,
-		NodeClaim:          in.NodeClaim,
-		daemonSetRequests:  maps.Clone(in.daemonSetRequests),
-		daemonSetLimits:    maps.Clone(in.daemonSetLimits),
-		podRequests:        maps.Clone(in.podRequests),
-		podLimits:          maps.Clone(in.podLimits),
-		podDisruptionCosts: maps.Clone(in.podDisruptionCosts),
-		hostPortUsage:      in.hostPortUsage.DeepCopy(),
-		volumeUsage:        in.volumeUsage.DeepCopy(),
-		markedForDeletion:  in.markedForDeletion,
-		nominatedUntil:     in.nominatedUntil,
+		Node:                   in.Node,
+		NodeClaim:              in.NodeClaim,
+		daemonSetRequests:      maps.Clone(in.daemonSetRequests),
+		daemonSetLimits:        maps.Clone(in.daemonSetLimits),
+		podRequests:            maps.Clone(in.podRequests),
+		podLimits:              maps.Clone(in.podLimits),
+		podDisruptionCosts:     maps.Clone(in.podDisruptionCosts),
+		podRequestsTotal:       in.podRequestsTotalOrCompute(),
+		daemonSetRequestsTotal: in.daemonSetRequestsTotalOrCompute(),
+		hostPortUsage:          in.hostPortUsage.DeepCopy(),
+		volumeUsage:            in.volumeUsage.DeepCopy(),
+		markedForDeletion:      in.markedForDeletion,
+		nominatedUntil:         in.nominatedUntil,
 	}
+}
+
+// ensureRequestTotals fills the memoized request sums if they have not been computed since the
+// last pod update. The caller must hold the cluster state write lock, since this writes to the
+// live node.
+func (in *StateNode) ensureRequestTotals() {
+	if in.podRequestsTotal == nil {
+		in.podRequestsTotal = resources.Merge(lo.Values(in.podRequests)...)
+	}
+	if in.daemonSetRequestsTotal == nil {
+		in.daemonSetRequestsTotal = resources.Merge(lo.Values(in.daemonSetRequests)...)
+	}
+}
+
+// podRequestsTotalOrCompute returns the memoized pod request sum when filled, computing it fresh
+// otherwise without writing to the receiver (safe under the cluster state read lock).
+func (in *StateNode) podRequestsTotalOrCompute() corev1.ResourceList {
+	if in.podRequestsTotal != nil {
+		return in.podRequestsTotal
+	}
+	return resources.Merge(lo.Values(in.podRequests)...)
+}
+
+// daemonSetRequestsTotalOrCompute is the daemonset counterpart of podRequestsTotalOrCompute.
+func (in *StateNode) daemonSetRequestsTotalOrCompute() corev1.ResourceList {
+	if in.daemonSetRequestsTotal != nil {
+		return in.daemonSetRequestsTotal
+	}
+	return resources.Merge(lo.Values(in.daemonSetRequests)...)
 }
 
 func (in *StateNode) Name() string {
@@ -419,7 +459,12 @@ func (in *StateNode) Available() corev1.ResourceList {
 	return resources.Subtract(in.Allocatable(), in.PodRequests())
 }
 
+// DaemonSetRequests returns the summed daemonset pod requests. The returned list may be a shared
+// memoized sum and must be treated as read-only.
 func (in *StateNode) DaemonSetRequests() corev1.ResourceList {
+	if in.daemonSetRequestsTotal != nil {
+		return in.daemonSetRequestsTotal
+	}
 	return resources.Merge(lo.Values(in.daemonSetRequests)...)
 }
 
@@ -435,7 +480,12 @@ func (in *StateNode) VolumeUsage() *scheduling.VolumeUsage {
 	return in.volumeUsage
 }
 
+// PodRequests returns the summed pod requests. The returned list may be a shared memoized sum
+// and must be treated as read-only.
 func (in *StateNode) PodRequests() corev1.ResourceList {
+	if in.podRequestsTotal != nil {
+		return in.podRequestsTotal
+	}
 	var totalRequests corev1.ResourceList
 	for _, requests := range in.podRequests {
 		totalRequests = resources.MergeInto(totalRequests, requests)
@@ -492,10 +542,12 @@ func (in *StateNode) updateForPod(ctx context.Context, kubeClient client.Client,
 	}
 	in.podRequests[podKey] = resources.RequestsForPods(pod)
 	in.podLimits[podKey] = resources.LimitsForPods(pod)
+	in.podRequestsTotal = nil
 	// if it's a daemonset, we track what it has requested separately
 	if podutils.IsOwnedByDaemonSet(pod) {
 		in.daemonSetRequests[podKey] = resources.RequestsForPods(pod)
 		in.daemonSetLimits[podKey] = resources.LimitsForPods(pod)
+		in.daemonSetRequestsTotal = nil
 	}
 	// Maintain per-pod disruption cost for balanced scoring. Only non-daemon
 	// pods with positive eviction cost contribute to the node's disruption cost.
@@ -522,6 +574,8 @@ func (in *StateNode) cleanupForPod(podKey types.NamespacedName) {
 	delete(in.daemonSetRequests, podKey)
 	delete(in.daemonSetLimits, podKey)
 	delete(in.podDisruptionCosts, podKey)
+	in.podRequestsTotal = nil
+	in.daemonSetRequestsTotal = nil
 }
 
 func nominationWindow(ctx context.Context) time.Duration {

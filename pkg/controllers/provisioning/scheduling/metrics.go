@@ -31,11 +31,12 @@ const (
 	phaseLabel         = "phase"
 	outcomeLabel       = "outcome"
 
-	phaseDomainGroups       = "domain_groups"
-	phaseTopologyUpdate     = "topology_update"
-	phaseReservationManager = "reservation_manager"
-	phaseExistingNodes      = "existing_nodes"
-	phaseNodeClaimTemplates = "node_claim_templates"
+	phaseDomainGroups         = "domain_groups"
+	phaseTopologyUpdate       = "topology_update"
+	phaseReservationManager   = "reservation_manager"
+	phaseExistingNodes        = "existing_nodes"
+	phaseNodeClaimTemplates   = "node_claim_templates"
+	phaseDaemonOverheadGroups = "daemon_overhead_groups"
 
 	cacheOutcomeHit    = "hit"
 	cacheOutcomeMiss   = "miss"
@@ -166,6 +167,30 @@ var (
 			Subsystem: schedulerSubsystem,
 			Name:      "node_claim_template_cache_events_total",
 			Help:      "Number of pass-scoped NodeClaim template cache lookups by outcome (hit, miss, bypass).",
+		},
+		[]string{
+			outcomeLabel,
+		},
+	)
+	DaemonOverheadGroupCacheEventsTotal = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: schedulerSubsystem,
+			Name:      "daemon_overhead_group_cache_events_total",
+			Help:      "Number of pass-scoped daemon overhead group cache lookups by outcome (hit, miss, bypass).",
+		},
+		[]string{
+			outcomeLabel,
+		},
+	)
+	TopologyPassCacheEventsTotal = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: schedulerSubsystem,
+			Name:      "topology_pass_cache_events_total",
+			Help:      "Number of pass-scoped topology pod list and node lookup cache events by outcome (hit, miss).",
 		},
 		[]string{
 			outcomeLabel,
