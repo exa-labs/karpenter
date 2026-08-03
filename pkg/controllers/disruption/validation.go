@@ -393,11 +393,14 @@ func replacementsMatchSimulation(replacements []*Replacement, newNodeClaims []*s
 
 // replacementMatchesSimulatedNodeClaim reports whether a command's replacement is still a valid stand-in for a
 // simulated NodeClaim. Instance type names alone are not enough: the same instance type can be reachable through
-// different NodePools or scheduling constraints (zone, capacity type, taints), so we also require the same NodePool,
+// different NodePools or scheduling constraints (zone, capacity type, taints), so we also require the same NodePool
+// (name and UID),
 // identical taints, and replacement requirements contained in the simulated claim's requirements (anything the
 // replacement is allowed to launch as must satisfy what the fresh simulation demands).
 func replacementMatchesSimulatedNodeClaim(replacement *Replacement, newNodeClaim *scheduling.NodeClaim) bool {
-	if replacement.NodePoolName != newNodeClaim.NodePoolName {
+	// compare the UID too: a NodePool deleted and recreated under the same name would otherwise validate and then
+	// launch NodeClaims owned by (and templated from) the old NodePool
+	if replacement.NodePoolName != newNodeClaim.NodePoolName || replacement.NodePoolUUID != newNodeClaim.NodePoolUUID {
 		return false
 	}
 	if !taintsAreEqual(replacement.Spec.Taints, newNodeClaim.Spec.Taints) {

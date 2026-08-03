@@ -105,6 +105,16 @@ func TestReplacementsMatchSimulationRejectsConflictingRequirements(t *testing.T)
 	}
 }
 
+func TestReplacementsMatchSimulationRejectsDifferentNodePoolUID(t *testing.T) {
+	replacement := simulatedNodeClaim("pool-a", []string{"m5.large"})
+	replacement.NodePoolUUID = "uid-old"
+	recreated := simulatedNodeClaim("pool-a", []string{"m5.large"})
+	recreated.NodePoolUUID = "uid-new"
+	if replacementsMatchSimulation([]*Replacement{replacementFor(replacement)}, []*pscheduling.NodeClaim{recreated}) {
+		t.Fatal("expected a same-name NodePool with a different UID (deleted and recreated) to not match")
+	}
+}
+
 func TestReplacementsMatchSimulationRejectsDifferentTaints(t *testing.T) {
 	tainted := simulatedNodeClaim("pool-a", []string{"m5.large"})
 	tainted.Spec.Taints = []corev1.Taint{{Key: "dedicated", Value: "gpu", Effect: corev1.TaintEffectNoSchedule}}
