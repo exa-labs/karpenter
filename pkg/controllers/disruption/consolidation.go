@@ -406,7 +406,7 @@ func truncateSpotInstanceTypeOptions(nc *pscheduling.NodeClaim) {
 
 // filterReplacementsByAggregatePrice filters each replacement NodeClaim's instance type options so that the
 // worst-case total launch price across all replacements stays below candidatePrice. Each claim's price budget is
-// its cheapest launch price scaled by candidatePrice/total-cheapest, so any combination of retained options is
+// its cheapest launch price plus an equal share of the surplus budget, so any combination of retained options is
 // guaranteed to sum below candidatePrice. With a single replacement this reduces to the classic
 // RemoveInstanceTypeOptionsByPriceAndMinValues(reqs, candidatePrice) behavior.
 func filterReplacementsByAggregatePrice(newNodeClaims []*pscheduling.NodeClaim, candidatePrice float64) error {
@@ -429,17 +429,16 @@ func filterReplacementsByAggregatePrice(newNodeClaims []*pscheduling.NodeClaim, 
 		}
 		return nil
 	}
+	// Give each claim its cheapest launch price plus an equal share of the surplus budget: the budgets sum to
+	// candidatePrice, every claim's budget strictly exceeds its cheapest option (even zero-priced ones), and any
+	// combination of retained options sums below candidatePrice.
+	surplusShare := (candidatePrice - cheapestTotal) / float64(len(newNodeClaims))
 	for i, nc := range newNodeClaims {
-		// Use candidatePrice directly for a single replacement: the scaled form is equivalent in exact arithmetic but
+		// Use candidatePrice directly for a single replacement: the surplus form is equivalent in exact arithmetic but
 		// floating point rounding could let an equally-priced option survive the strict < comparison.
 		maxPrice := candidatePrice
 		if len(newNodeClaims) > 1 {
-			if cheapestTotal == 0 {
-				// All claims have a zero-priced cheapest option; split the budget evenly to avoid a NaN scale.
-				maxPrice = candidatePrice / float64(len(newNodeClaims))
-			} else {
-				maxPrice = cheapest[i] * (candidatePrice / cheapestTotal)
-			}
+			maxPrice = cheapest[i] + surplusShare
 		}
 		if _, err := nc.RemoveInstanceTypeOptionsByPriceAndMinValues(nc.Requirements, maxPrice); err != nil {
 			return err
