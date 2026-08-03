@@ -39,13 +39,15 @@ type daemonOverheadCacheContextKey struct{}
 type DaemonOverheadCache struct {
 	mu                       sync.RWMutex
 	daemonPodsByKey          map[string][]*corev1.Pod
+	daemonRequestsByKey      map[string]corev1.ResourceList
 	daemonSetGeneration      string
 	daemonSetGenerationValid bool
 }
 
 func NewDaemonOverheadCache() *DaemonOverheadCache {
 	return &DaemonOverheadCache{
-		daemonPodsByKey: map[string][]*corev1.Pod{},
+		daemonPodsByKey:     map[string][]*corev1.Pod{},
+		daemonRequestsByKey: map[string]corev1.ResourceList{},
 	}
 }
 
@@ -55,6 +57,7 @@ func (c *DaemonOverheadCache) updateDaemonSetGeneration(daemonSetPods []*corev1.
 	defer c.mu.Unlock()
 	if !ok || !c.daemonSetGenerationValid || c.daemonSetGeneration != generation {
 		c.daemonPodsByKey = map[string][]*corev1.Pod{}
+		c.daemonRequestsByKey = map[string]corev1.ResourceList{}
 		c.daemonSetGeneration = generation
 		c.daemonSetGenerationValid = ok
 	}
@@ -139,4 +142,23 @@ func (c *DaemonOverheadCache) setDaemonPods(key string, pods []*corev1.Pod) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.daemonPodsByKey[key] = pods
+}
+
+// daemonRequests returns a deep copy of the cached summed daemon resource requests for a node.
+// A deep copy is required because NewExistingNode mutates the ResourceList it is handed
+// (SubtractFrom and clamping), and Quantity arithmetic can mutate shared inner state.
+func (c *DaemonOverheadCache) daemonRequests(key string) (corev1.ResourceList, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	requests, ok := c.daemonRequestsByKey[key]
+	if !ok {
+		return nil, false
+	}
+	return requests.DeepCopy(), true
+}
+
+func (c *DaemonOverheadCache) setDaemonRequests(key string, requests corev1.ResourceList) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.daemonRequestsByKey[key] = requests.DeepCopy()
 }

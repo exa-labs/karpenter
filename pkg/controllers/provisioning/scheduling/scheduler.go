@@ -153,22 +153,26 @@ func NewScheduler(
 	}
 	// Pre-filter instance types eligible for NodePools to reduce work done during scheduling loops for pods
 	// if no templates remain, we still want to build the scheduler so that Karpenter can ack pods which can schedule to existing and in-flight capacity
+	templatesStart := time.Now()
 	templates := lo.FilterMap(nodePools, func(np *v1.NodePool, _ int) (*NodeClaimTemplate, bool) {
-		var err error
-		nct := NewNodeClaimTemplate(np)
-		nct.InstanceTypeOptions, _, err = filterInstanceTypesByRequirements(instanceTypes[np.Name], nct.Requirements, &corev1.Pod{}, corev1.ResourceList{}, []DaemonOverheadGroup{{InstanceTypes: instanceTypes[np.Name], HostPortUsage: scheduling.NewHostPortUsage()}}, corev1.ResourceList{}, minValuesPolicy == karpopts.MinValuesPolicyBestEffort)
-		if len(nct.InstanceTypeOptions) == 0 {
-			if instanceTypeFilterErr, ok := lo.ErrorsAs[InstanceTypeFilterError](err); ok && instanceTypeFilterErr.minValuesIncompatibleErr != nil {
-				recorder.Publish(NoCompatibleInstanceTypes(np, true))
-				log.FromContext(ctx).WithValues("NodePool", klog.KObj(np)).Info("skipping, nodepool requirements filtered out all instance types", "minValuesIncompatibleErr", instanceTypeFilterErr.minValuesIncompatibleErr)
-			} else {
-				recorder.Publish(NoCompatibleInstanceTypes(np, false))
-				log.FromContext(ctx).WithValues("NodePool", klog.KObj(np)).Info("skipping, nodepool requirements filtered out all instance types")
+		return nodeClaimTemplateWithCache(ctx, np, instanceTypes[np.Name], minValuesPolicy, func() *NodeClaimTemplate {
+			var err error
+			nct := NewNodeClaimTemplate(np)
+			nct.InstanceTypeOptions, _, err = filterInstanceTypesByRequirements(instanceTypes[np.Name], nct.Requirements, &corev1.Pod{}, corev1.ResourceList{}, []DaemonOverheadGroup{{InstanceTypes: instanceTypes[np.Name], HostPortUsage: scheduling.NewHostPortUsage()}}, corev1.ResourceList{}, minValuesPolicy == karpopts.MinValuesPolicyBestEffort)
+			if len(nct.InstanceTypeOptions) == 0 {
+				if instanceTypeFilterErr, ok := lo.ErrorsAs[InstanceTypeFilterError](err); ok && instanceTypeFilterErr.minValuesIncompatibleErr != nil {
+					recorder.Publish(NoCompatibleInstanceTypes(np, true))
+					log.FromContext(ctx).WithValues("NodePool", klog.KObj(np)).Info("skipping, nodepool requirements filtered out all instance types", "minValuesIncompatibleErr", instanceTypeFilterErr.minValuesIncompatibleErr)
+				} else {
+					recorder.Publish(NoCompatibleInstanceTypes(np, false))
+					log.FromContext(ctx).WithValues("NodePool", klog.KObj(np)).Info("skipping, nodepool requirements filtered out all instance types")
+				}
+				return nil
 			}
-			return nil, false
-		}
-		return nct, true
+			return nct
+		})
 	})
+	ConstructionPhaseDurationSeconds.Observe(time.Since(templatesStart).Seconds(), map[string]string{phaseLabel: phaseNodeClaimTemplates})
 	s := &Scheduler{
 		uuid:                 uuid.NewUUID(),
 		kubeClient:           kubeClient,
@@ -805,12 +809,30 @@ func (s *Scheduler) calculateExistingNodeClaims(ctx context.Context, stateNodes 
 	for _, node := range stateNodes {
 		taints := node.Taints()
 		nodeRequirements := labelRequirementsForStateNode(s.nodeRequirementsCache, node)
-		daemons := s.getCompatibleDaemonPods(ctx, node, taints, nodeRequirements, daemonSetPods)
+		daemonRequests := s.getDaemonRequests(ctx, node, taints, nodeRequirements, daemonSetPods)
 		isUnderConsolidateAfter := enforceConsolidateAfter && disruption.IsUnderConsolidateAfter(nodePoolMap[node.Name()], node.NodeClaim, s.clock)
-		s.existingNodes = append(s.existingNodes, NewExistingNode(node, s.topology, taints, nodeRequirements, resources.RequestsForPods(daemons...), s.instanceTypeForNode(node), isUnderConsolidateAfter))
+		s.existingNodes = append(s.existingNodes, NewExistingNode(node, s.topology, taints, nodeRequirements, daemonRequests, s.instanceTypeForNode(node), isUnderConsolidateAfter))
 		s.updateRemainingResources(node)
 	}
 	s.sortExistingNodes()
+}
+
+// getDaemonRequests returns the summed resource requests of the daemon pods compatible with the
+// given node, reusing the pass-scoped cached sum when available. The sum is a pure function of
+// the compatible daemon pod set, which is cached under the same node key, so both share the
+// daemon overhead cache's node-identity and daemonset-generation invalidation.
+func (s *Scheduler) getDaemonRequests(ctx context.Context, node *state.StateNode, taints []corev1.Taint, nodeRequirements scheduling.Requirements, daemonSetPods []*corev1.Pod) corev1.ResourceList {
+	if s.daemonOverheadCache != nil {
+		if key, ok := nodeCacheKey(node, karpopts.FromContext(ctx).IgnoreDRARequests); ok {
+			if cached, ok := s.daemonOverheadCache.daemonRequests(key); ok {
+				return cached
+			}
+			requests := resources.RequestsForPods(s.getCompatibleDaemonPods(ctx, node, taints, nodeRequirements, daemonSetPods)...)
+			s.daemonOverheadCache.setDaemonRequests(key, requests)
+			return requests
+		}
+	}
+	return resources.RequestsForPods(s.getCompatibleDaemonPods(ctx, node, taints, nodeRequirements, daemonSetPods)...)
 }
 
 // getCompatibleDaemonPods filters daemon pods that can schedule to the given node
