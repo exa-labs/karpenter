@@ -28,9 +28,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
+	"sigs.k8s.io/karpenter/pkg/events"
 	"sigs.k8s.io/karpenter/pkg/metrics"
 	"sigs.k8s.io/karpenter/pkg/operator/injection"
 )
+
+// CensusConsolidationType labels census-originated simulation metrics so they
+// never mix with the real single-node pass's series.
+const CensusConsolidationType = "census"
 
 // CensusInterval is how often the actionable-candidate census sweeps all
 // consolidation candidates.
@@ -50,7 +55,15 @@ type CensusController struct {
 	method *SingleNodeConsolidation
 }
 
+// noopRecorder suppresses candidate events from census simulations: the census
+// executes nothing, so Unconsolidatable/ConsolidationCandidate events would be
+// misleading on nodes.
+type noopRecorder struct{}
+
+func (noopRecorder) Publish(...events.Event) {}
+
 func NewCensusController(c consolidation) *CensusController {
+	c.recorder = noopRecorder{}
 	return &CensusController{method: NewSingleNodeConsolidation(c)}
 }
 
@@ -76,7 +89,7 @@ func (c *CensusController) Reconcile(ctx context.Context) (reconciler.Result, er
 		return reconciler.Result{}, fmt.Errorf("determining census candidates, %w", err)
 	}
 
-	ctx = withConsolidationType(ctx, c.method.ConsolidationType())
+	ctx = withConsolidationType(ctx, CensusConsolidationType)
 	ctx = scheduling.WithDaemonOverheadCache(ctx, scheduling.NewDaemonOverheadCache())
 	ctx = scheduling.WithDomainGroupCache(ctx, scheduling.NewDomainGroupCache())
 	ctx = scheduling.WithNodeRequirementsCache(ctx, scheduling.NewNodeRequirementsCache())

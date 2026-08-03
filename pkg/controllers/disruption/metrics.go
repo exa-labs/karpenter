@@ -54,16 +54,17 @@ const (
 	// CandidateSkipBudgetExhausted marks a single-node candidate whose NodePool
 	// has zero disruptions currently allowed by its budget.
 	CandidateSkipBudgetExhausted = "budget_exhausted"
-	// CandidateSkipOverBudgetAllowance marks a multi-node candidate that did not
-	// fit in the batch bounded by its NodePool's per-pass disruption allowance.
-	// The budget may be entirely unused; this is batch-size bookkeeping.
-	CandidateSkipOverBudgetAllowance  = "over_budget_allowance"
-	CandidateSkipThreshold            = "cannot_pass_threshold"
-	CandidateSkipNoOp                 = "noop_decision"
-	CandidateSkipComputeError         = "compute_error"
-	CandidateSkipPodsDidNotSchedule   = "pods_did_not_schedule"
-	CandidateSkipMultipleReplacements = "multiple_replacements_required"
-	CandidateSkipApprovalRejected     = "approval_rejected"
+	// CandidateSkipSimBatchOverBudgetAllowance marks a multi-node candidate that
+	// did not fit in the joint simulation batch bounded by its NodePool's per-pass
+	// disruption allowance. The budget may be entirely unused; this is batch-size
+	// bookkeeping, not active-disruption saturation.
+	CandidateSkipSimBatchOverBudgetAllowance = "sim_batch_over_budget_allowance"
+	CandidateSkipThreshold                   = "cannot_pass_threshold"
+	CandidateSkipNoOp                        = "noop_decision"
+	CandidateSkipComputeError                = "compute_error"
+	CandidateSkipPodsDidNotSchedule          = "pods_did_not_schedule"
+	CandidateSkipMultipleReplacements        = "multiple_replacements_required"
+	CandidateSkipApprovalRejected            = "approval_rejected"
 )
 
 var (

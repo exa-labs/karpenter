@@ -104,7 +104,6 @@ func NewControllers(
 	controllers := []controller.Controller{
 		p, evictionQueue, disruptionQueue,
 		disruption.NewController(clock, kubeClient, p, cloudProvider, recorder, cluster, disruptionQueue, clusterCost),
-		disruption.NewCensusController(disruption.MakeConsolidation(clock, cluster, kubeClient, p, cloudProvider, recorder, disruptionQueue)),
 		provisioning.NewPodController(kubeClient, p, cluster),
 		provisioning.NewNodeController(kubeClient, p),
 		nodepoolhash.NewController(kubeClient, cloudProvider),
@@ -135,6 +134,7 @@ func NewControllers(
 
 	if !options.FromContext(ctx).DisableClusterStateObservability {
 		controllers = append(controllers,
+			disruption.NewCensusController(disruption.MakeConsolidation(clock, cluster, kubeClient, p, cloudProvider, recorder, disruptionQueue)),
 			metricspod.NewController(kubeClient, cluster),
 			metricsnodepool.NewController(kubeClient, cloudProvider, clusterCost),
 			metricsnode.NewController(cluster),
