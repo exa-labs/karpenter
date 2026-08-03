@@ -178,6 +178,7 @@ func (q *Queue) Reconcile(ctx context.Context, nodeClaim *v1.NodeClaim) (reconci
 		cmd.Succeeded = true
 		if !alreadySucceeded && (cmd.ConsolidationType() == SingleNodeConsolidationType || cmd.ConsolidationType() == MultiNodeConsolidationType) {
 			ObserveRealizedSavings(ctx, q.kubeClient, *cmd)
+			ObserveExecutedConsolidationCommand(*cmd)
 		}
 	}
 	q.CompleteCommand(cmd)
