@@ -87,7 +87,7 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 		// add it to the list of candidates, and decrement the budget.
 		if disruptionBudgetMapping[candidate.NodePool.Name] == 0 {
 			constrainedByBudgets = true
-			ObserveConsolidationCandidateSkip(m.ConsolidationType(), candidate.NodePool.Name, CandidateSkipBudgetExhausted)
+			ObserveConsolidationCandidateSkip(m.ConsolidationType(), candidate.NodePool.Name, CandidateSkipOverBudgetAllowance)
 			continue
 		}
 		// set constrainedByBudgets to true if any node was a candidate but was constrained by a budget

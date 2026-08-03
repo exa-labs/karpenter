@@ -51,7 +51,13 @@ const (
 	PassOutcomeTimedOut               = "timed_out"
 	PassOutcomeBudgetConstrained      = "budget_constrained"
 	PassOutcomeNoOp                   = "no_op"
-	CandidateSkipBudgetExhausted      = "budget_exhausted"
+	// CandidateSkipBudgetExhausted marks a single-node candidate whose NodePool
+	// has zero disruptions currently allowed by its budget.
+	CandidateSkipBudgetExhausted = "budget_exhausted"
+	// CandidateSkipOverBudgetAllowance marks a multi-node candidate that did not
+	// fit in the batch bounded by its NodePool's per-pass disruption allowance.
+	// The budget may be entirely unused; this is batch-size bookkeeping.
+	CandidateSkipOverBudgetAllowance = "over_budget_allowance"
 	CandidateSkipThreshold            = "cannot_pass_threshold"
 	CandidateSkipNoOp                 = "noop_decision"
 	CandidateSkipComputeError         = "compute_error"
@@ -111,6 +117,36 @@ var (
 			Help:      "Number of nodes eligible for disruption by Karpenter. Labeled by disruption reason.",
 		},
 		[]string{metrics.ReasonLabel},
+	)
+	ConsolidationActionableCandidates = opmetrics.NewPrometheusGauge(
+		crmetrics.Registry,
+		prometheus.GaugeOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "consolidation_actionable_candidates",
+			Help:      "Number of consolidation candidates for which the latest census sweep found a strictly cheaper delete or replace. Labeled by nodepool and decision.",
+		},
+		[]string{metrics.NodePoolLabel, decisionLabel},
+	)
+	ConsolidationCensusDurationSeconds = opmetrics.NewPrometheusGauge(
+		crmetrics.Registry,
+		prometheus.GaugeOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "consolidation_census_duration_seconds",
+			Help:      "Wall-clock duration of the latest actionable-candidate census sweep.",
+		},
+		[]string{},
+	)
+	ConsolidationCensusCandidatesEvaluated = opmetrics.NewPrometheusGauge(
+		crmetrics.Registry,
+		prometheus.GaugeOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "consolidation_census_candidates_evaluated",
+			Help:      "Number of candidates evaluated by the latest actionable-candidate census sweep. Compare with eligible_nodes to detect truncated sweeps.",
+		},
+		[]string{},
 	)
 	ConsolidationTimeoutsTotal = opmetrics.NewPrometheusCounter(
 		crmetrics.Registry,

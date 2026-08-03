@@ -104,6 +104,7 @@ func NewControllers(
 	controllers := []controller.Controller{
 		p, evictionQueue, disruptionQueue,
 		disruption.NewController(clock, kubeClient, p, cloudProvider, recorder, cluster, disruptionQueue, clusterCost),
+		disruption.NewCensusController(disruption.MakeConsolidation(clock, cluster, kubeClient, p, cloudProvider, recorder, disruptionQueue)),
 		provisioning.NewPodController(kubeClient, p, cluster),
 		provisioning.NewNodeController(kubeClient, p),
 		nodepoolhash.NewController(kubeClient, cloudProvider),
