@@ -362,8 +362,12 @@ func startPassStage(ctx context.Context, stage string) func() {
 	}
 }
 
-func ObserveEligibleNodesByNodePool(candidates []*Candidate, consolidationType, reason string) {
-	scope := labelKeyWithout(map[string]string{
+// ObserveEligibleNodesByNodePool records the number of eligible candidates per NodePool for a single disruption
+// method's pass. method distinguishes passes that share the same reason and consolidation type labels (e.g.
+// StaticDrift and Drift both report reason=drifted): each method owns its own set of series, so one method's pass
+// never deletes or overwrites another's. Methods sharing labels must observe disjoint NodePool sets.
+func ObserveEligibleNodesByNodePool(candidates []*Candidate, method, consolidationType, reason string) {
+	scope := method + "\x00" + labelKeyWithout(map[string]string{
 		metrics.ReasonLabel:    reason,
 		ConsolidationTypeLabel: consolidationType,
 	}, metrics.NodePoolLabel)
@@ -374,7 +378,7 @@ func ObserveEligibleNodesByNodePool(candidates []*Candidate, consolidationType, 
 			metrics.ReasonLabel:    reason,
 			ConsolidationTypeLabel: consolidationType,
 		}
-		key := labelKeyWithout(labels)
+		key := method + "\x00" + labelKeyWithout(labels)
 		series := current[key]
 		series.labels = labels
 		series.scope = scope

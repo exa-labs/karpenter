@@ -199,13 +199,14 @@ func (c *ConsolidationValidator) Validate(ctx context.Context, cmd Command, vali
 
 func (c *ConsolidationValidator) isValid(ctx context.Context, cmd Command, validationPeriod time.Duration) error {
 	if validationPeriod > 0 {
-		waitStart := time.Now()
+		endWaitStage := startPassStage(ctx, stageValidationWait)
 		select {
 		case <-ctx.Done():
+			endWaitStage()
 			return errors.New("context canceled")
 		case <-c.clock.After(validationPeriod):
 		}
-		observePassStage(ctx, stageValidationWait, waitStart)
+		endWaitStage()
 	}
 	candidateValidationStart := time.Now()
 	validatedCandidates, err := c.validateCandidates(ctx, cmd.Candidates...)

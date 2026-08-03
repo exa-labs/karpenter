@@ -17,10 +17,14 @@ limitations under the License.
 package disruption
 
 import (
+	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	clocktesting "k8s.io/utils/clock/testing"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
@@ -193,4 +197,44 @@ func TestReplacementsMatchSimulationLargeAdversarialInput(t *testing.T) {
 	if replacementsMatchSimulation(replacements, claims) {
 		t.Fatal("expected matching to fail when one replacement has no compatible simulated claim")
 	}
+}
+
+func TestIsValidRecordsWaitStageOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(withConsolidationType(context.Background(), "cancel-test"))
+	fakeClock := clocktesting.NewFakeClock(time.Now())
+	v := &ConsolidationValidator{validation: validation{clock: fakeClock}}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- v.isValid(ctx, Command{}, time.Minute)
+	}()
+	// wait until isValid is blocked on the validation wait, then cancel partway through
+	for !fakeClock.HasWaiters() {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	if err := <-errCh; err == nil {
+		t.Fatal("expected isValid to fail when the context is canceled")
+	}
+
+	families, err := crmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() != "karpenter_voluntary_disruption_pass_stage_seconds_total" {
+			continue
+		}
+		for _, metric := range family.Metric {
+			for _, label := range metric.Label {
+				if label.GetName() == ConsolidationTypeLabel && label.GetValue() == "cancel-test" {
+					if metric.GetCounter().GetValue() <= 0 {
+						t.Fatal("expected the canceled validation wait to record elapsed time")
+					}
+					return
+				}
+			}
+		}
+	}
+	t.Fatal("expected a validation_wait stage series for the canceled wait")
 }
