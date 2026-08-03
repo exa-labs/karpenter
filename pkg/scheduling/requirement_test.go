@@ -746,6 +746,44 @@ var _ = Describe("Requirement", func() {
 			Entry(nil, lessThan9OperatorWithFlexibility, lessThan9OperatorWithFlexibility, lessThan9OperatorWithFlexibility),
 		)
 	})
+	Context("SubsetOf", func() {
+		DescribeTable("should compute containment correctly",
+			func(inner *Requirement, outer *Requirement, expected types.GomegaMatcher) {
+				Expect(inner.SubsetOf(outer)).To(expected)
+			},
+
+			// finite sets
+			Entry(nil, inA, inA, BeTrue()),
+			Entry(nil, inA, inAB, BeTrue()),
+			Entry(nil, inAB, inA, BeFalse()),
+			Entry(nil, inA, inB, BeFalse()),
+			Entry(nil, inAB, exists, BeTrue()),
+			Entry(nil, inA, notInA, BeFalse()),
+			Entry(nil, inB, notInA, BeTrue()),
+			// DoesNotExist is only contained in another DoesNotExist
+			Entry(nil, doesNotExist, doesNotExist, BeTrue()),
+			Entry(nil, doesNotExist, inA, BeFalse()),
+			Entry(nil, doesNotExist, exists, BeFalse()),
+			Entry(nil, doesNotExist, notInA, BeFalse()),
+			Entry(nil, inA, doesNotExist, BeFalse()),
+			Entry(nil, exists, doesNotExist, BeFalse()),
+			Entry(nil, in1, greaterThan1, BeFalse()),
+			Entry(nil, in9, greaterThan1, BeTrue()),
+			Entry(nil, in19, greaterThan1, BeFalse()),
+			// complements
+			Entry(nil, exists, exists, BeTrue()),
+			Entry(nil, exists, inA, BeFalse()),
+			Entry(nil, exists, notInA, BeFalse()),
+			Entry(nil, notInA, exists, BeTrue()),
+			Entry(nil, notInA, notInA, BeTrue()),
+			Entry(nil, notIn12, notInA, BeFalse()),
+			Entry(nil, exists, greaterThan1, BeFalse()),
+			Entry(nil, greaterThan9, greaterThan1, BeTrue()),
+			Entry(nil, greaterThan1, greaterThan9, BeFalse()),
+			Entry(nil, lessThan1, lessThan9, BeTrue()),
+			Entry(nil, lessThan9, lessThan1, BeFalse()),
+		)
+	})
 	Context("Has", func() {
 		DescribeTable("should have the right values",
 			func(requirement *Requirement, value string, expected types.GomegaMatcher) {

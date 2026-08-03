@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -208,17 +209,26 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 		}, nil
 	}
 
-	// we're not going to turn a single node into multiple candidates
-	if len(results.NewNodeClaims) != 1 {
+	// A single candidate may be split into up to MaxConsolidationReplacements replacement nodes
+	// (e.g. one large on-demand node into several smaller spot nodes). Multi-candidate
+	// consolidation remains N->1: it merges many nodes into one replacement.
+	maxReplacements := 1
+	if len(candidates) == 1 {
+		// CLI validation enforces >= 1, but clamp so a zero value from a directly-constructed
+		// options struct fails safe to the classic 1->1 behavior
+		maxReplacements = max(1, options.FromContext(ctx).MaxConsolidationReplacements)
+	}
+	// record the required replacement count for every single-candidate simulation needing more than one
+	// replacement, whether or not it is within the configured limit
+	if len(candidates) == 1 && len(results.NewNodeClaims) > 1 {
+		ConsolidationRequiredReplacements.Observe(float64(len(results.NewNodeClaims)), map[string]string{
+			ConsolidationTypeLabel: consolidationType,
+			metrics.NodePoolLabel:  candidates[0].NodePool.Name,
+		})
+	}
+	if len(results.NewNodeClaims) > maxReplacements {
 		if len(candidates) == 1 {
-			nodePool := candidates[0].NodePool.Name
-			ObserveConsolidationCandidateSkip(consolidationType, nodePool, CandidateSkipMultipleReplacements)
-			ConsolidationRequiredReplacements.Observe(float64(len(results.NewNodeClaims)), map[string]string{
-				ConsolidationTypeLabel: consolidationType,
-				metrics.NodePoolLabel:  nodePool,
-			})
-		}
-		if len(candidates) == 1 {
+			ObserveConsolidationCandidateSkip(consolidationType, candidates[0].NodePool.Name, CandidateSkipMultipleReplacements)
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Can't remove without creating %d candidates", len(results.NewNodeClaims)))...)
 		}
 		return Command{}, nil
@@ -237,10 +247,17 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 
 	// sort the instanceTypes by price before we take any actions like truncation for spot-to-spot consolidation or finding the nodeclaim
 	// that meets the minimum requirement after filteringByPrice
-	results.NewNodeClaims[0].InstanceTypeOptions = results.NewNodeClaims[0].InstanceTypeOptions.OrderByPrice(results.NewNodeClaims[0].Requirements)
+	for _, nc := range results.NewNodeClaims {
+		nc.InstanceTypeOptions = nc.InstanceTypeOptions.OrderByPrice(nc.Requirements)
+	}
 
+	// If all candidates are spot and any replacement can be spot, route through the spot-to-spot path so its feature
+	// gate and anti-churn protections apply. Replacement claims that can't satisfy the injected spot requirement will
+	// end up with no instance type options there and the consolidation is skipped.
 	if allExistingAreSpot &&
-		results.NewNodeClaims[0].Requirements.Get(v1.CapacityTypeLabelKey).Has(v1.CapacityTypeSpot) {
+		lo.SomeBy(results.NewNodeClaims, func(nc *pscheduling.NodeClaim) bool {
+			return nc.Requirements.Get(v1.CapacityTypeLabelKey).Has(v1.CapacityTypeSpot)
+		}) {
 		cmd, err := c.computeSpotToSpotConsolidation(ctx, candidates, results, candidatePrice)
 		if err == nil && cmd.Decision() == NoOpDecision {
 			observeSingleNodeSkip(CandidateSkipNoOp)
@@ -252,19 +269,8 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 	// If we use this directly for spot-to-spot consolidation, we are bound to get repeated consolidations because the strategy that chooses to launch the spot instance from the list does
 	// it based on availability and price which could result in selection/launch of non-lowest priced instance in the list. So, we would keep repeating this loop till we get to lowest priced instance
 	// causing churns and landing onto lower available spot instance ultimately resulting in higher interruptions.
-	results.NewNodeClaims[0], err = results.NewNodeClaims[0].RemoveInstanceTypeOptionsByPriceAndMinValues(results.NewNodeClaims[0].Requirements, candidatePrice)
-	if err != nil {
+	if !c.filterReplacementsAndPublish(results.NewNodeClaims, candidates, candidatePrice) {
 		observeSingleNodeSkip(CandidateSkipNoOp)
-		if len(candidates) == 1 {
-			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Filtering by price: %v", err))...)
-		}
-		return Command{}, nil
-	}
-	if len(results.NewNodeClaims[0].InstanceTypeOptions) == 0 {
-		observeSingleNodeSkip(CandidateSkipNoOp)
-		if len(candidates) == 1 {
-			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, "Can't replace with a cheaper node")...)
-		}
 		return Command{}, nil
 	}
 
@@ -273,9 +279,11 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 	// spot capacity is insufficient we don't replace the node with a more expensive on-demand node.  Instead the launch
 	// should fail and we'll just leave the node alone. We don't need to do the same for reserved since the requirements
 	// are injected on by the scheduler.
-	ctReq := results.NewNodeClaims[0].Requirements.Get(v1.CapacityTypeLabelKey)
-	if ctReq.Has(v1.CapacityTypeSpot) && ctReq.Has(v1.CapacityTypeOnDemand) {
-		results.NewNodeClaims[0].Requirements.Add(scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, v1.CapacityTypeSpot))
+	for _, nc := range results.NewNodeClaims {
+		ctReq := nc.Requirements.Get(v1.CapacityTypeLabelKey)
+		if ctReq.Has(v1.CapacityTypeSpot) && ctReq.Has(v1.CapacityTypeOnDemand) {
+			nc.Requirements.Add(scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, v1.CapacityTypeSpot))
+		}
 	}
 
 	cmd := Command{
@@ -306,24 +314,15 @@ func (c *consolidation) computeSpotToSpotConsolidation(ctx context.Context, cand
 		return Command{}, nil
 	}
 
-	// Since we are sure that the replacement nodeclaim considered for the spot candidates are spot, we will enforce it through the requirements.
-	results.NewNodeClaims[0].Requirements.Add(scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, v1.CapacityTypeSpot))
-	// All possible replacements for the current candidate compatible with spot offerings
-	results.NewNodeClaims[0].InstanceTypeOptions = results.NewNodeClaims[0].InstanceTypeOptions.Compatible(results.NewNodeClaims[0].Requirements)
+	// Since we are sure that the replacement nodeclaims considered for the spot candidates are spot, we will enforce it through the requirements.
+	for _, nc := range results.NewNodeClaims {
+		nc.Requirements.Add(scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, v1.CapacityTypeSpot))
+		// All possible replacements for the current candidate compatible with spot offerings
+		nc.InstanceTypeOptions = nc.InstanceTypeOptions.Compatible(nc.Requirements)
+	}
 
 	// filterByPrice returns the instanceTypes that are lower priced than the current candidate and any error that indicates the input couldn't be filtered.
-	var err error
-	results.NewNodeClaims[0], err = results.NewNodeClaims[0].RemoveInstanceTypeOptionsByPriceAndMinValues(results.NewNodeClaims[0].Requirements, candidatePrice)
-	if err != nil {
-		if len(candidates) == 1 {
-			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Filtering by price: %v", err))...)
-		}
-		return Command{}, nil
-	}
-	if len(results.NewNodeClaims[0].InstanceTypeOptions) == 0 {
-		if len(candidates) == 1 {
-			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, "Can't replace with a cheaper node")...)
-		}
+	if !c.filterReplacementsAndPublish(results.NewNodeClaims, candidates, candidatePrice) {
 		return Command{}, nil
 	}
 
@@ -346,10 +345,12 @@ func (c *consolidation) computeSpotToSpotConsolidation(ctx context.Context, cand
 	// We check whether we have 15 cheaper instances than the current candidate instance. If this is the case, we know the following things:
 	//   1) The current candidate is not in the set of the 15 cheapest instance types and
 	//   2) There were at least 15 options cheaper than the current candidate.
-	if len(results.NewNodeClaims[0].InstanceTypeOptions) < MinInstanceTypesForSpotToSpotConsolidation {
-		c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("SpotToSpotConsolidation requires %d cheaper instance type options than the current candidate to consolidate, got %d",
-			MinInstanceTypesForSpotToSpotConsolidation, len(results.NewNodeClaims[0].InstanceTypeOptions)))...)
-		return Command{}, nil
+	for _, nc := range results.NewNodeClaims {
+		if len(nc.InstanceTypeOptions) < MinInstanceTypesForSpotToSpotConsolidation {
+			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("SpotToSpotConsolidation requires %d cheaper instance type options than the current candidate to consolidate, got %d",
+				MinInstanceTypesForSpotToSpotConsolidation, len(nc.InstanceTypeOptions)))...)
+			return Command{}, nil
+		}
 	}
 
 	// If a user has minValues set in their NodePool requirements, then we cap the number of instancetypes at 100 which would be the actual number of instancetypes sent for launch to enable spot-to-spot consolidation.
@@ -361,12 +362,8 @@ func (c *consolidation) computeSpotToSpotConsolidation(ctx context.Context, cand
 	// 3) Assuming CreateInstanceFromTypes(A,B,C,D) returned D, we check if D is part of (A,B,C) and it isn't, so will have another consolidation send a CreateInstanceFromTypes(A,B,C), since they’re cheaper than D resulting in continual consolidation.
 	// If we had restricted instance types to min flexibility at launch at step (1) i.e CreateInstanceFromTypes(A,B,C), we would have received the instance type part of the list preventing immediate consolidation.
 	// Taking this to 15 types, we need to only send the 15 cheapest types in the CreateInstanceFromTypes call so that the resulting instance is always in that set of 15 and we won’t immediately consolidate.
-	if results.NewNodeClaims[0].Requirements.HasMinValues() {
-		// Here we are trying to get the max of the minimum instances required to satisfy the minimum requirement and the default 15 to cap the instances for spot-to-spot consolidation.
-		minInstanceTypes, _, _ := results.NewNodeClaims[0].InstanceTypeOptions.SatisfiesMinValues(results.NewNodeClaims[0].Requirements)
-		results.NewNodeClaims[0].InstanceTypeOptions = lo.Slice(results.NewNodeClaims[0].InstanceTypeOptions, 0, lo.Max([]int{MinInstanceTypesForSpotToSpotConsolidation, minInstanceTypes}))
-	} else {
-		results.NewNodeClaims[0].InstanceTypeOptions = lo.Slice(results.NewNodeClaims[0].InstanceTypeOptions, 0, MinInstanceTypesForSpotToSpotConsolidation)
+	for _, nc := range results.NewNodeClaims {
+		truncateSpotInstanceTypeOptions(nc)
 	}
 
 	cmd := Command{
@@ -378,4 +375,79 @@ func (c *consolidation) computeSpotToSpotConsolidation(ctx context.Context, cand
 	cmd.EmitCandidateEvents(c.recorder)
 
 	return cmd, nil
+}
+
+// filterReplacementsAndPublish price-filters the replacement NodeClaims against the candidates' total price and
+// returns whether all replacements still have viable instance type options, publishing an Unconsolidatable event for
+// single-node candidates when they don't.
+func (c *consolidation) filterReplacementsAndPublish(newNodeClaims []*pscheduling.NodeClaim, candidates []*Candidate, candidatePrice float64) bool {
+	if err := filterReplacementsByAggregatePrice(newNodeClaims, candidatePrice); err != nil {
+		if len(candidates) == 1 {
+			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Filtering by price: %v", err))...)
+		}
+		return false
+	}
+	if lo.SomeBy(newNodeClaims, func(nc *pscheduling.NodeClaim) bool { return len(nc.InstanceTypeOptions) == 0 }) {
+		if len(candidates) == 1 {
+			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Can't replace with %s", lo.Ternary(len(newNodeClaims) == 1, "a cheaper node", "cheaper nodes")))...)
+		}
+		return false
+	}
+	return true
+}
+
+// truncateSpotInstanceTypeOptions caps a replacement NodeClaim's instance type options to the 15 cheapest (or the
+// minimum required to satisfy minValues, if greater) so the launched instance is always within the set consolidation
+// priced against, preventing continual spot-to-spot consolidation churn.
+func truncateSpotInstanceTypeOptions(nc *pscheduling.NodeClaim) {
+	if nc.Requirements.HasMinValues() {
+		// Here we are trying to get the max of the minimum instances required to satisfy the minimum requirement and the default 15 to cap the instances for spot-to-spot consolidation.
+		minInstanceTypes, _, _ := nc.InstanceTypeOptions.SatisfiesMinValues(nc.Requirements)
+		nc.InstanceTypeOptions = lo.Slice(nc.InstanceTypeOptions, 0, lo.Max([]int{MinInstanceTypesForSpotToSpotConsolidation, minInstanceTypes}))
+	} else {
+		nc.InstanceTypeOptions = lo.Slice(nc.InstanceTypeOptions, 0, MinInstanceTypesForSpotToSpotConsolidation)
+	}
+}
+
+// filterReplacementsByAggregatePrice filters each replacement NodeClaim's instance type options so that the
+// worst-case total launch price across all replacements stays below candidatePrice. Each claim's price budget is
+// its cheapest launch price plus an equal share of the surplus budget, so any combination of retained options is
+// guaranteed to sum below candidatePrice. With a single replacement this reduces to the classic
+// RemoveInstanceTypeOptionsByPriceAndMinValues(reqs, candidatePrice) behavior.
+func filterReplacementsByAggregatePrice(newNodeClaims []*pscheduling.NodeClaim, candidatePrice float64) error {
+	cheapest := make([]float64, len(newNodeClaims))
+	cheapestTotal := 0.0
+	for i, nc := range newNodeClaims {
+		cheapest[i] = math.MaxFloat64
+		for _, it := range nc.InstanceTypeOptions {
+			if p := it.Offerings.Available().WorstLaunchPrice(nc.Requirements); p < cheapest[i] {
+				cheapest[i] = p
+			}
+		}
+		cheapestTotal += cheapest[i]
+	}
+	if cheapestTotal >= candidatePrice {
+		// No combination of replacements can beat the candidate's price; empty all options so the caller
+		// reports "can't replace with cheaper node(s)".
+		for _, nc := range newNodeClaims {
+			nc.InstanceTypeOptions = nil
+		}
+		return nil
+	}
+	// Give each claim its cheapest launch price plus an equal share of the surplus budget: the budgets sum to
+	// candidatePrice, every claim's budget strictly exceeds its cheapest option (even zero-priced ones), and any
+	// combination of retained options sums below candidatePrice.
+	surplusShare := (candidatePrice - cheapestTotal) / float64(len(newNodeClaims))
+	for i, nc := range newNodeClaims {
+		// Use candidatePrice directly for a single replacement: the surplus form is equivalent in exact arithmetic but
+		// floating point rounding could let an equally-priced option survive the strict < comparison.
+		maxPrice := candidatePrice
+		if len(newNodeClaims) > 1 {
+			maxPrice = cheapest[i] + surplusShare
+		}
+		if _, err := nc.RemoveInstanceTypeOptionsByPriceAndMinValues(nc.Requirements, maxPrice); err != nil {
+			return err
+		}
+	}
+	return nil
 }
