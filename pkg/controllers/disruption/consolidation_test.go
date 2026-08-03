@@ -2407,6 +2407,163 @@ var _ = Describe("Consolidation", func() {
 			ExpectExists(ctx, env.Client, node)
 		})
 	})
+	Context("Replace 1->N", func() {
+		var currentInstance, smallInstance *cloudprovider.InstanceType
+		var rs *appsv1.ReplicaSet
+
+		makePods := func(count int) []*corev1.Pod {
+			return lo.Times(count, func(_ int) *corev1.Pod {
+				return test.Pod(test.PodOptions{
+					ObjectMeta: metav1.ObjectMeta{Labels: labels,
+						OwnerReferences: []metav1.OwnerReference{
+							{
+								APIVersion:         "apps/v1",
+								Kind:               "ReplicaSet",
+								Name:               rs.Name,
+								UID:                rs.UID,
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
+							},
+						}},
+					ResourceRequirements: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10")},
+					},
+				})
+			})
+		}
+		BeforeEach(func() {
+			currentInstance = fake.NewInstanceType("current-large-on-demand",
+				fake.WithResources(corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("32"), corev1.ResourcePods: resource.MustParse("10")}),
+				fake.WithOfferings(cloudprovider.Offering{
+					Available:    false,
+					Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
+					Price:        1.0,
+				}),
+			)
+			// only fits one 10-CPU pod at a time, so replacing the large node requires one claim per pod
+			smallInstance = fake.NewInstanceType("small-replacement",
+				fake.WithResources(corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("12"), corev1.ResourcePods: resource.MustParse("10")}),
+				fake.WithOfferings(
+					cloudprovider.Offering{
+						Available:    true,
+						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1a"}),
+						Price:        0.1,
+					},
+					cloudprovider.Offering{
+						Available:    true,
+						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
+						Price:        0.15,
+					},
+				),
+			)
+			cloudProvider.InstanceTypes = []*cloudprovider.InstanceType{currentInstance, smallInstance}
+			ExpectSingletonReconciled(ctx, pricingController)
+
+			rs = test.ReplicaSet()
+			ExpectApplied(ctx, env.Client, rs)
+			Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(rs), rs)).To(Succeed())
+
+			nodeClaim, node = test.NodeClaimAndNode(v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						v1.NodePoolLabelKey:            nodePool.Name,
+						corev1.LabelInstanceTypeStable: currentInstance.Name,
+						v1.CapacityTypeLabelKey:        v1.CapacityTypeOnDemand,
+						corev1.LabelTopologyZone:       "test-zone-1a",
+					},
+				},
+				Status: v1.NodeClaimStatus{
+					Allocatable: map[corev1.ResourceName]resource.Quantity{corev1.ResourceCPU: resource.MustParse("32"), corev1.ResourcePods: resource.MustParse("10")},
+				},
+			})
+			nodeClaim.StatusConditions().SetTrue(v1.ConditionTypeConsolidatable)
+		})
+		It("will not replace a node with multiple nodes by default", func() {
+			pods := makePods(2)
+			ExpectApplied(ctx, env.Client, rs, pods[0], pods[1], node, nodeClaim, nodePool)
+			ExpectManualBinding(ctx, env.Client, pods[0], node)
+			ExpectManualBinding(ctx, env.Client, pods[1], node)
+
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(1))
+			Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(1))
+			ExpectExists(ctx, env.Client, nodeClaim)
+
+			_, ok := lo.Find(recorder.Events(), func(e events.Event) bool {
+				return strings.Contains(e.Message, "Can't remove without creating 2 candidates")
+			})
+			Expect(ok).To(BeTrue())
+		})
+		It("can replace a node with multiple cheaper nodes when MaxConsolidationReplacements allows it", func() {
+			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{MaxConsolidationReplacements: lo.ToPtr(3)}))
+			pods := makePods(2)
+			ExpectApplied(ctx, env.Client, rs, pods[0], pods[1], node, nodeClaim, nodePool)
+			ExpectManualBinding(ctx, env.Client, pods[0], node)
+			ExpectManualBinding(ctx, env.Client, pods[1], node)
+
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			cmds := queue.GetCommands()
+			Expect(cmds).To(HaveLen(1))
+			Expect(cmds[0].Replacements).To(HaveLen(2))
+			// all replacements must be launched and initialized before the candidate is drained
+			ExpectExists(ctx, env.Client, nodeClaim)
+			ExpectMakeNewNodeClaimsReady(ctx, env.Client, env.Clock, cluster, cloudProvider, cmds[0])
+			ExpectObjectReconciled(ctx, env.Client, queue, nodeClaim)
+			ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaim)
+
+			nodeClaims := ExpectNodeClaims(ctx, env.Client)
+			Expect(nodeClaims).To(HaveLen(2))
+			for _, nc := range nodeClaims {
+				Expect(nc.Name).ToNot(Equal(nodeClaim.Name))
+				// the replacements had both spot and on-demand options, so spot must be enforced to keep the aggregate price gain
+				Expect(scheduling.NewNodeSelectorRequirementsWithMinValues(nc.Spec.Requirements...).Get(v1.CapacityTypeLabelKey).Has(v1.CapacityTypeOnDemand)).To(BeFalse())
+			}
+			ExpectNotFound(ctx, env.Client, nodeClaim, node)
+		})
+		It("will not replace a node with multiple nodes if the aggregate price is not cheaper", func() {
+			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{MaxConsolidationReplacements: lo.ToPtr(3)}))
+			// 2 x 0.6 > 1.0, so splitting the node is not a savings
+			for _, o := range smallInstance.Offerings {
+				o.Price = 0.6
+			}
+			ExpectSingletonReconciled(ctx, pricingController)
+			pods := makePods(2)
+			ExpectApplied(ctx, env.Client, rs, pods[0], pods[1], node, nodeClaim, nodePool)
+			ExpectManualBinding(ctx, env.Client, pods[0], node)
+			ExpectManualBinding(ctx, env.Client, pods[1], node)
+
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(1))
+			Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(1))
+			ExpectExists(ctx, env.Client, nodeClaim)
+		})
+		It("will not replace a node that requires more replacements than MaxConsolidationReplacements", func() {
+			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{MaxConsolidationReplacements: lo.ToPtr(3)}))
+			pods := makePods(4)
+			ExpectApplied(ctx, env.Client, rs, pods[0], pods[1], pods[2], pods[3], node, nodeClaim, nodePool)
+			for _, pod := range pods {
+				ExpectManualBinding(ctx, env.Client, pod, node)
+			}
+
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(1))
+			Expect(ExpectNodes(ctx, env.Client)).To(HaveLen(1))
+			ExpectExists(ctx, env.Client, nodeClaim)
+
+			_, ok := lo.Find(recorder.Events(), func(e events.Event) bool {
+				return strings.Contains(e.Message, "Can't remove without creating 4 candidates")
+			})
+			Expect(ok).To(BeTrue())
+		})
+	})
 	Context("Delete", func() {
 		var nodeClaims []*v1.NodeClaim
 		var nodes []*corev1.Node

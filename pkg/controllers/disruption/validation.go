@@ -319,9 +319,9 @@ func (v *validation) validateCommand(ctx context.Context, cmd Command, candidate
 	// We want to ensure that the re-simulated scheduling using the current cluster state produces the same result.
 	// There are three possible options for the number of new candidates that we need to handle:
 	// len(NewNodeClaims) == 0, as long as we weren't expecting a new node, this is valid
-	// len(NewNodeClaims) > 1, something in the cluster changed so that the candidates we were going to delete can no longer
-	//                    be deleted without producing more than one node
-	// len(NewNodeClaims) == 1, as long as the noe looks like what we were expecting, this is valid
+	// len(NewNodeClaims) != len(cmd.Replacements), something in the cluster changed so that deleting the candidates
+	//                    now requires a different number of replacement nodes than the command was computed with
+	// len(NewNodeClaims) == len(cmd.Replacements), as long as the nodes look like what we were expecting, this is valid
 	if len(results.NewNodeClaims) == 0 {
 		if len(cmd.Replacements) == 0 {
 			// scheduling produced zero new NodeClaims and we weren't expecting any, so this is valid.
@@ -332,36 +332,52 @@ func (v *validation) validateCommand(ctx context.Context, cmd Command, candidate
 		return NewSchedulingValidationError(fmt.Errorf("scheduling simulation produced new results"))
 	}
 
-	// we need more than one replacement node which is never valid currently (all of our node replacement is m->1, never m->n)
-	if len(results.NewNodeClaims) > 1 {
+	// the simulation must produce exactly the number of replacements the command intends to launch
+	if len(results.NewNodeClaims) != len(cmd.Replacements) {
 		return NewSchedulingValidationError(fmt.Errorf("scheduling simulation produced new results"))
 	}
 
-	// we now know that scheduling simulation wants to create one new node
-	if len(cmd.Replacements) == 0 {
-		// but we weren't expecting any new NodeClaims, so this is invalid
-		return NewSchedulingValidationError(fmt.Errorf("scheduling simulation produced new results"))
-	}
-
-	// We know that the scheduling simulation wants to create a new node and that the command we are verifying wants
-	// to create a new node. The scheduling simulation doesn't apply any filtering to instance types, so it may include
-	// instance types that we don't want to launch which were filtered out when the lifecycleCommand was created.  To
-	// check if our lifecycleCommand is valid, we just want to ensure that the list of instance types we are considering
-	// creating are a subset of what scheduling says we should create.  We check for a subset since the scheduling
-	// simulation here does no price filtering, so it will include more expensive types.
+	// We know that the scheduling simulation wants to create new nodes and that the command we are verifying wants
+	// to create the same number of nodes. The scheduling simulation doesn't apply any filtering to instance types, so
+	// it may include instance types that we don't want to launch which were filtered out when the lifecycleCommand was
+	// created. To check if our lifecycleCommand is valid, we just want to ensure that each replacement's instance
+	// types are a subset of what scheduling says we should create for some distinct simulated NodeClaim. We check for
+	// a subset since the scheduling simulation here does no price filtering, so it will include more expensive types.
 	//
 	// This is necessary since consolidation only wants cheaper NodeClaims.  Suppose consolidation determined we should delete
 	// a 4xlarge and replace it with a 2xlarge. If things have changed and the scheduling simulation we just performed
 	// now says that we need to launch a 4xlarge. It's still launching the correct number of NodeClaims, but it's just
 	// as expensive or possibly more so we shouldn't validate.
-	if !instanceTypesAreSubset(cmd.Replacements[0].InstanceTypeOptions, results.NewNodeClaims[0].InstanceTypeOptions) {
+	if !replacementsMatchSimulation(cmd.Replacements, results.NewNodeClaims) {
 		return NewSchedulingValidationError(fmt.Errorf("scheduling simulation produced new results"))
 	}
-
-	// Now we know:
-	// - current scheduling simulation says to create a new node with types T = {T_0, T_1, ..., T_n}
-	// - our lifecycle command says to create a node with types {U_0, U_1, ..., U_n} where U is a subset of T
 	return nil
+}
+
+// replacementsMatchSimulation reports whether there is a one-to-one matching between the command's replacements and
+// the simulated NodeClaims such that each replacement's instance type options are a subset of its matched simulated
+// NodeClaim's options. Replacement counts are small (bounded by MAX_CONSOLIDATION_REPLACEMENTS), so a backtracking
+// search over the possible assignments is cheap.
+func replacementsMatchSimulation(replacements []*Replacement, newNodeClaims []*scheduling.NodeClaim) bool {
+	used := make([]bool, len(newNodeClaims))
+	var match func(i int) bool
+	match = func(i int) bool {
+		if i == len(replacements) {
+			return true
+		}
+		for j := range newNodeClaims {
+			if used[j] || !instanceTypesAreSubset(replacements[i].InstanceTypeOptions, newNodeClaims[j].InstanceTypeOptions) {
+				continue
+			}
+			used[j] = true
+			if match(i + 1) {
+				return true
+			}
+			used[j] = false
+		}
+		return false
+	}
+	return match(0)
 }
 
 // getValidationFailureReason categorizes validation errors into specific failure types
