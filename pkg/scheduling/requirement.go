@@ -254,6 +254,52 @@ func (r *Requirement) HasIntersection(requirement *Requirement) bool {
 	return false
 }
 
+// SubsetOf reports whether every value allowed by r is also allowed by requirement, i.e. any node satisfying r is
+// guaranteed to satisfy requirement.
+func (r *Requirement) SubsetOf(requirement *Requirement) bool {
+	// DoesNotExist is a distinct selector state (the label must be absent), not an empty allowed-value set:
+	// a node without the label satisfies DoesNotExist but no other operator, so it is only contained in
+	// another DoesNotExist.
+	if r.Operator() == corev1.NodeSelectorOpDoesNotExist {
+		return requirement.Operator() == corev1.NodeSelectorOpDoesNotExist
+	}
+	if !r.complement {
+		// r allows a finite set of values; each must be allowed by requirement (including its bounds).
+		for v := range r.values {
+			if !requirement.Has(v) {
+				return false
+			}
+		}
+		return true
+	}
+	// r allows everything except r.values (within r's bounds); a finite set can never contain it.
+	if !requirement.complement {
+		return false
+	}
+	// requirement's bounds must be at least as permissive as r's.
+	if !boundsAreContained(r, requirement) {
+		return false
+	}
+	// every value requirement excludes must also be disallowed by r.
+	for v := range requirement.values {
+		if r.Has(v) {
+			return false
+		}
+	}
+	return true
+}
+
+// boundsAreContained reports whether outer's numeric bounds are at least as permissive as inner's.
+func boundsAreContained(inner, outer *Requirement) bool {
+	if outer.gte != nil && (inner.gte == nil || *inner.gte < *outer.gte) {
+		return false
+	}
+	if outer.lte != nil && (inner.lte == nil || *inner.lte > *outer.lte) {
+		return false
+	}
+	return true
+}
+
 func (r *Requirement) Any() string {
 	switch r.Operator() {
 	case corev1.NodeSelectorOpIn:

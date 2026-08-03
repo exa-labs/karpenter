@@ -38,10 +38,10 @@ func TestConsolidationMetricsRecordLabels(t *testing.T) {
 	disruption.ObserveConsolidationReplacementAttempt("unit", "unit-pool", 2)
 	disruption.ObserveEligibleNodesByNodePool([]*disruption.Candidate{
 		{NodePool: &v1.NodePool{ObjectMeta: metav1.ObjectMeta{Name: "unit-pool"}}},
-	}, "", "unit-reason")
+	}, "unit-method", "", "unit-reason")
 	disruption.ObserveEligibleNodesByNodePool([]*disruption.Candidate{
 		{NodePool: &v1.NodePool{ObjectMeta: metav1.ObjectMeta{Name: "unit-pool"}}},
-	}, "", "other-reason")
+	}, "unit-method", "", "other-reason")
 	disruption.ObserveUnseenNodePools("unit", []string{"unseen-pool"})
 
 	families, err := crmetrics.Registry.Gather()
@@ -101,6 +101,36 @@ func TestConsolidationMetricsRecordLabels(t *testing.T) {
 		"reason":             "other-reason",
 	}) {
 		t.Fatal("eligible nodepool metric lost a sibling reason series")
+	}
+}
+
+func TestEligibleNodesByNodePoolMethodsDoNotCollide(t *testing.T) {
+	// StaticDrift and Drift both report reason=drifted with an empty consolidation type over disjoint NodePool
+	// sets; the later pass must not delete or overwrite the earlier pass's series
+	disruption.ObserveEligibleNodesByNodePool([]*disruption.Candidate{
+		{NodePool: &v1.NodePool{ObjectMeta: metav1.ObjectMeta{Name: "static-pool"}}},
+	}, "static-drift", "", "drifted")
+	disruption.ObserveEligibleNodesByNodePool([]*disruption.Candidate{
+		{NodePool: &v1.NodePool{ObjectMeta: metav1.ObjectMeta{Name: "dynamic-pool"}}},
+	}, "drift", "", "drifted")
+
+	families, err := crmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasMetric(families, "karpenter_voluntary_disruption_eligible_nodes_by_nodepool", map[string]string{
+		"consolidation_type": "",
+		"nodepool":           "static-pool",
+		"reason":             "drifted",
+	}) {
+		t.Fatal("a later method's pass deleted an earlier method's eligible nodepool series")
+	}
+	if !hasMetric(families, "karpenter_voluntary_disruption_eligible_nodes_by_nodepool", map[string]string{
+		"consolidation_type": "",
+		"nodepool":           "dynamic-pool",
+		"reason":             "drifted",
+	}) {
+		t.Fatal("the later method's eligible nodepool series was not recorded")
 	}
 }
 

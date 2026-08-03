@@ -90,6 +90,7 @@ type Options struct {
 	minValuesPolicyRaw               string
 	MinValuesPolicy                  MinValuesPolicy
 	IgnoreDRARequests                bool // NOTE: This flag will be removed once formal DRA support is GA in Karpenter.
+	MaxConsolidationReplacements     int
 	FeatureGates                     FeatureGates
 }
 
@@ -132,6 +133,7 @@ func (o *Options) AddFlags(fs *FlagSet) {
 	fs.DurationVar(&o.NodeMetricsInterval, "node-metrics-interval", env.WithDefaultDuration("NODE_METRICS_INTERVAL", 30*time.Second), "The interval at which per-node state metrics (allocatable, pod requests/limits, lifetime, cluster utilization) are rebuilt and re-emitted. Larger clusters may want a longer interval since each rebuild walks every node.")
 	fs.StringVar(&o.preferencePolicyRaw, "preference-policy", env.WithDefaultString("PREFERENCE_POLICY", string(PreferencePolicyRespect)), "How the Karpenter scheduler should treat preferences. Preferences include preferredDuringSchedulingIgnoreDuringExecution node and pod affinities/anti-affinities and ScheduleAnyways topologySpreadConstraints. Can be one of 'Ignore' and 'Respect'")
 	fs.StringVar(&o.minValuesPolicyRaw, "min-values-policy", env.WithDefaultString("MIN_VALUES_POLICY", string(MinValuesPolicyStrict)), "Min values policy for scheduling. Options include 'Strict' for existing behavior where min values are strictly enforced or 'BestEffort' where Karpenter relaxes min values when it isn't satisfied.")
+	fs.IntVar(&o.MaxConsolidationReplacements, "max-consolidation-replacements", env.WithDefaultInt("MAX_CONSOLIDATION_REPLACEMENTS", 1), "The maximum number of replacement nodes a single consolidation candidate may be split into. 1 preserves the classic 1->1 behavior; higher values allow bounded 1->N consolidation (e.g. replacing one large on-demand node with several smaller spot nodes) when the aggregate replacement price is lower.")
 	fs.BoolVarWithEnv(&o.IgnoreDRARequests, "ignore-dra-requests", "IGNORE_DRA_REQUESTS", true, "When set, Karpenter will ignore pods' DRA requests during scheduling simulations. NOTE: This flag will be removed once formal DRA support is GA in Karpenter.")
 	fs.StringVar(&o.FeatureGates.inputStr, "feature-gates", env.WithDefaultString("FEATURE_GATES", "NodeRepair=false,ReservedCapacity=true,SpotToSpotConsolidation=false,NodeOverlay=false,StaticCapacity=false,CapacityBuffer=false"), "Optional features can be enabled / disabled using feature gates. Current options are: NodeRepair, ReservedCapacity, SpotToSpotConsolidation, NodeOverlay, StaticCapacity, and CapacityBuffer.")
 }
@@ -154,6 +156,9 @@ func (o *Options) Parse(fs *FlagSet, args ...string) error {
 	}
 	if o.CPURequests <= 0 {
 		o.CPURequests = 1000
+	}
+	if o.MaxConsolidationReplacements < 1 {
+		return fmt.Errorf("validating cli flags / env vars, MAX_CONSOLIDATION_REPLACEMENTS must be >= 1, got %d", o.MaxConsolidationReplacements)
 	}
 	gates, err := ParseFeatureGates(o.FeatureGates.inputStr)
 	if err != nil {
