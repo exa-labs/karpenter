@@ -118,19 +118,21 @@ func nodeClaimTemplateCacheKey(nodePoolName string, priceLimit float64) string {
 	return nodePoolName + "|" + strconv.FormatFloat(priceLimit, 'g', -1, 64)
 }
 
-// instanceTypesBelowPrice returns the instance types that have an available offering priced below limit, preserving
+// instanceTypesBelowPrice returns the instance types that can launch below limit under requirements, preserving
 // order. An instance type that can't launch below limit can never be part of a replacement that beats a candidate
 // priced at limit, so dropping it up front is what forces the scheduler to pack the candidate's pods onto several
-// smaller nodes instead of one node of the candidate's own type. Instance types with no offerings at all are
-// retained since there is no price to judge them by.
-func instanceTypesBelowPrice(instanceTypes []*cloudprovider.InstanceType, limit float64) []*cloudprovider.InstanceType {
+// smaller nodes instead of one node of the candidate's own type. Only offerings the requirements admit count: a
+// zone-pinned or on-demand-only NodePool must not keep a candidate-sized type because of a cheap offering it can
+// never launch, which would let the type absorb every pod again and suppress the split. Instance types with no
+// offerings at all are retained since there is no price to judge them by.
+func instanceTypesBelowPrice(instanceTypes []*cloudprovider.InstanceType, requirements scheduling.Requirements, limit float64) []*cloudprovider.InstanceType {
 	if limit <= 0 {
 		return instanceTypes
 	}
 	filtered := make([]*cloudprovider.InstanceType, 0, len(instanceTypes))
 	for _, it := range instanceTypes {
-		if len(it.Offerings) == 0 || lo.SomeBy(it.Offerings, func(o *cloudprovider.Offering) bool {
-			return o.Available && o.Price < limit
+		if len(it.Offerings) == 0 || lo.SomeBy(it.Offerings.Available().Compatible(requirements), func(o *cloudprovider.Offering) bool {
+			return o.Price < limit
 		}) {
 			filtered = append(filtered, it)
 		}

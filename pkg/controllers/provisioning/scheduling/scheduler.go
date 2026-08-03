@@ -170,12 +170,20 @@ func NewScheduler(
 	priceLimit := option.Resolve(opts...).newNodeClaimPriceLimit
 	templatesStart := time.Now()
 	templates := lo.FilterMap(nodePools, func(np *v1.NodePool, _ int) (*NodeClaimTemplate, bool) {
-		poolInstanceTypes := instanceTypesBelowPrice(instanceTypes[np.Name], priceLimit)
-		return nodeClaimTemplateWithCache(ctx, np, poolInstanceTypes, minValuesPolicy, priceLimit, func() *NodeClaimTemplate {
+		return nodeClaimTemplateWithCache(ctx, np, instanceTypes[np.Name], minValuesPolicy, priceLimit, func() *NodeClaimTemplate {
 			var err error
 			nct := NewNodeClaimTemplate(np)
+			// the ceiling is judged against the offerings this template can actually launch, so it runs against
+			// the template's requirements rather than the raw provider list
+			poolInstanceTypes := instanceTypesBelowPrice(instanceTypes[np.Name], nct.Requirements, priceLimit)
 			nct.InstanceTypeOptions, _, err = filterInstanceTypesByRequirements(poolInstanceTypes, nct.Requirements, &corev1.Pod{}, corev1.ResourceList{}, []DaemonOverheadGroup{{InstanceTypes: poolInstanceTypes, HostPortUsage: scheduling.NewHostPortUsage()}}, corev1.ResourceList{}, minValuesPolicy == karpopts.MinValuesPolicyBestEffort)
 			if len(nct.InstanceTypeOptions) == 0 {
+				// A price ceiling empties every NodePool priced above the candidate being split. That is the
+				// filter working, not a NodePool whose requirements match nothing, so the template is dropped
+				// without telling operators their NodePool is misconfigured.
+				if len(poolInstanceTypes) < len(instanceTypes[np.Name]) {
+					return nil
+				}
 				if instanceTypeFilterErr, ok := lo.ErrorsAs[InstanceTypeFilterError](err); ok && instanceTypeFilterErr.minValuesIncompatibleErr != nil {
 					recorder.Publish(NoCompatibleInstanceTypes(np, true))
 					log.FromContext(ctx).WithValues("NodePool", klog.KObj(np)).Info("skipping, nodepool requirements filtered out all instance types", "minValuesIncompatibleErr", instanceTypeFilterErr.minValuesIncompatibleErr)

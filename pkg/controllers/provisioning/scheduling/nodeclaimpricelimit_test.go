@@ -34,12 +34,16 @@ func pricedInstanceType(name string, offerings ...cloudprovider.Offering) *cloud
 }
 
 func offering(capacityType string, price float64, available bool) cloudprovider.Offering {
+	return offeringInZone(capacityType, "zone-1", price, available)
+}
+
+func offeringInZone(capacityType, zone string, price float64, available bool) cloudprovider.Offering {
 	return cloudprovider.Offering{
 		Available: available,
 		Price:     price,
 		Requirements: scheduling.NewLabelRequirements(map[string]string{
 			v1.CapacityTypeLabelKey:  capacityType,
-			corev1.LabelTopologyZone: "zone-1",
+			corev1.LabelTopologyZone: zone,
 		}),
 	}
 }
@@ -59,6 +63,7 @@ func TestInstanceTypesBelowPrice(t *testing.T) {
 	unpriced := pricedInstanceType("unpriced")
 	unpriced.Offerings = nil
 	its := []*cloudprovider.InstanceType{large, medium, unavailableCheap, unpriced}
+	anyOffering := scheduling.NewRequirements()
 
 	for _, tc := range []struct {
 		name  string
@@ -73,7 +78,7 @@ func TestInstanceTypesBelowPrice(t *testing.T) {
 		{name: "limit below every offering keeps only the unpriced type", limit: 0.1, want: []string{"unpriced"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := instanceTypeNames(instanceTypesBelowPrice(its, tc.limit))
+			got := instanceTypeNames(instanceTypesBelowPrice(its, anyOffering, tc.limit))
 			if len(got) != len(tc.want) {
 				t.Fatalf("expected %v, got %v", tc.want, got)
 			}
@@ -86,6 +91,37 @@ func TestInstanceTypesBelowPrice(t *testing.T) {
 	}
 }
 
+// An instance type is only kept when it can launch below the limit under the template's own requirements: a cheap
+// offering in a capacity type or zone the NodePool excludes would otherwise keep a candidate-sized type in play,
+// which is exactly the type whose removal forces the split.
+func TestInstanceTypesBelowPriceIgnoresIncompatibleOfferings(t *testing.T) {
+	large := pricedInstanceType("large",
+		offering(v1.CapacityTypeSpot, 1.0, true),      // cheap, but the pool is on-demand only
+		offering(v1.CapacityTypeOnDemand, 6.75, true), // what the pool would actually launch
+	)
+	medium := pricedInstanceType("medium", offering(v1.CapacityTypeOnDemand, 2.84, true))
+	zonePinnedLarge := pricedInstanceType("zone-pinned-large",
+		offeringInZone(v1.CapacityTypeOnDemand, "zone-2", 1.0, true), // the pool can't schedule into zone-2
+		offeringInZone(v1.CapacityTypeOnDemand, "zone-1", 6.75, true),
+	)
+	its := []*cloudprovider.InstanceType{large, medium, zonePinnedLarge}
+
+	requirements := scheduling.NewRequirements(
+		scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, v1.CapacityTypeOnDemand),
+		scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, "zone-1"),
+	)
+	got := instanceTypeNames(instanceTypesBelowPrice(its, requirements, 6.75))
+	if len(got) != 1 || got[0] != "medium" {
+		t.Fatalf("expected only medium, got %v", got)
+	}
+
+	// the same fleet keeps both large types once their cheap offerings are compatible
+	got = instanceTypeNames(instanceTypesBelowPrice(its, scheduling.NewRequirements(), 6.75))
+	if len(got) != 3 {
+		t.Fatalf("expected every type without requirements, got %v", got)
+	}
+}
+
 // A pass interleaves unlimited simulations with price-limited split retries for the same NodePool, so the two must
 // not evict each other or hand each other's templates out.
 func TestNodeClaimTemplateCacheSeparatesPriceLimits(t *testing.T) {
@@ -94,7 +130,7 @@ func TestNodeClaimTemplateCacheSeparatesPriceLimits(t *testing.T) {
 		pricedInstanceType("large", offering(v1.CapacityTypeSpot, 6.75, true)),
 		pricedInstanceType("medium", offering(v1.CapacityTypeSpot, 2.84, true)),
 	}
-	limited := instanceTypesBelowPrice(all, 6.75)
+	limited := instanceTypesBelowPrice(all, scheduling.NewRequirements(), 6.75)
 	ctx := WithNodeClaimTemplateCache(context.Background(), NewNodeClaimTemplateCache())
 	ctx = WithInstanceTypeRevisions(ctx, map[string]uint64{"pool": 1})
 

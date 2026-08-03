@@ -40,7 +40,7 @@ type DaemonOverheadCache struct {
 	mu                       sync.RWMutex
 	daemonPodsByKey          map[string][]*corev1.Pod
 	daemonRequestsByKey      map[string]corev1.ResourceList
-	overheadGroupsByPool     map[string]overheadGroupsCacheEntry
+	overheadGroupsByTemplate map[string]overheadGroupsCacheEntry
 	daemonSetGeneration      string
 	daemonSetGenerationValid bool
 }
@@ -48,7 +48,10 @@ type DaemonOverheadCache struct {
 // overheadGroupsCacheEntry stores the daemon overhead groups computed for one NodeClaimTemplate,
 // keyed by the template's cache fingerprint so any change to the NodePool spec or its instance
 // type set invalidates the entry. DaemonSet changes invalidate the whole cache via
-// updateDaemonSetGeneration.
+// updateDaemonSetGeneration. The fingerprint is part of the map key rather than a value checked
+// against a single per-NodePool entry: a consolidation pass interleaves a NodePool's unlimited
+// template with the price-limited ones its split retries build, and one entry per NodePool would
+// make those two overwrite each other on every candidate.
 type overheadGroupsCacheEntry struct {
 	fingerprint uint64
 	groups      []DaemonOverheadGroup
@@ -56,9 +59,9 @@ type overheadGroupsCacheEntry struct {
 
 func NewDaemonOverheadCache() *DaemonOverheadCache {
 	return &DaemonOverheadCache{
-		daemonPodsByKey:      map[string][]*corev1.Pod{},
-		daemonRequestsByKey:  map[string]corev1.ResourceList{},
-		overheadGroupsByPool: map[string]overheadGroupsCacheEntry{},
+		daemonPodsByKey:          map[string][]*corev1.Pod{},
+		daemonRequestsByKey:      map[string]corev1.ResourceList{},
+		overheadGroupsByTemplate: map[string]overheadGroupsCacheEntry{},
 	}
 }
 
@@ -69,7 +72,7 @@ func (c *DaemonOverheadCache) updateDaemonSetGeneration(daemonSetPods []*corev1.
 	if !ok || !c.daemonSetGenerationValid || c.daemonSetGeneration != generation {
 		c.daemonPodsByKey = map[string][]*corev1.Pod{}
 		c.daemonRequestsByKey = map[string]corev1.ResourceList{}
-		c.overheadGroupsByPool = map[string]overheadGroupsCacheEntry{}
+		c.overheadGroupsByTemplate = map[string]overheadGroupsCacheEntry{}
 		c.daemonSetGeneration = generation
 		c.daemonSetGenerationValid = ok
 	}
@@ -182,7 +185,7 @@ func (c *DaemonOverheadCache) setDaemonRequests(key string, requests corev1.Reso
 func (c *DaemonOverheadCache) overheadGroups(nodePoolName string, fingerprint uint64) ([]DaemonOverheadGroup, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	entry, ok := c.overheadGroupsByPool[nodePoolName]
+	entry, ok := c.overheadGroupsByTemplate[overheadGroupsCacheKey(nodePoolName, fingerprint)]
 	if !ok || entry.fingerprint != fingerprint {
 		return nil, false
 	}
@@ -192,5 +195,9 @@ func (c *DaemonOverheadCache) overheadGroups(nodePoolName string, fingerprint ui
 func (c *DaemonOverheadCache) setOverheadGroups(nodePoolName string, fingerprint uint64, groups []DaemonOverheadGroup) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.overheadGroupsByPool[nodePoolName] = overheadGroupsCacheEntry{fingerprint: fingerprint, groups: groups}
+	c.overheadGroupsByTemplate[overheadGroupsCacheKey(nodePoolName, fingerprint)] = overheadGroupsCacheEntry{fingerprint: fingerprint, groups: groups}
+}
+
+func overheadGroupsCacheKey(nodePoolName string, fingerprint uint64) string {
+	return nodePoolName + "|" + strconv.FormatUint(fingerprint, 16)
 }

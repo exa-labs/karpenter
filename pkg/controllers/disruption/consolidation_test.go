@@ -2795,6 +2795,59 @@ var _ = Describe("Consolidation", func() {
 			Expect(queue.GetCommands()).To(BeEmpty())
 			ExpectExists(ctx, env.Client, nodeClaim)
 		})
+		It("does not warn that a priced-out nodepool has no compatible instance types", func() {
+			// the retry prices out every nodepool above the candidate, and a pool that only allows the candidate's
+			// own type is emptied by design - telling operators its requirements match nothing would be false
+			expensivePool := test.NodePool(v1.NodePool{
+				Spec: v1.NodePoolSpec{
+					Template: v1.NodeClaimTemplate{
+						Spec: v1.NodeClaimTemplateSpec{
+							Requirements: []v1.NodeSelectorRequirementWithMinValues{{
+								Key:      corev1.LabelInstanceTypeStable,
+								Operator: corev1.NodeSelectorOpIn,
+								Values:   []string{currentInstance.Name},
+							}},
+						},
+					},
+				},
+			})
+			ExpectApplied(ctx, env.Client, expensivePool)
+			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{
+				MaxConsolidationReplacements: lo.ToPtr(3),
+				ConsolidationSplitFallback:   lo.ToPtr(true),
+			}))
+			applyTwoPodNode()
+			recorder.Reset()
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			Expect(queue.GetCommands()).To(HaveLen(1))
+			Expect(recorder.Calls(events.NoCompatibleInstanceTypes)).To(BeZero())
+		})
+		It("does not spend a split attempt on a spot candidate while spot-to-spot consolidation is off", func() {
+			// the spot path rejects every replacement before it simulates anything, so retrying such a candidate
+			// can only burn the pass budget that keeps the fallback from eating candidate traversal depth
+			currentInstance.Offerings = append(currentInstance.Offerings, &cloudprovider.Offering{
+				Available:    true,
+				Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1a"}),
+				Price:        1.0,
+			})
+			ExpectSingletonReconciled(ctx, pricingController)
+			nodeClaim.Labels[v1.CapacityTypeLabelKey] = v1.CapacityTypeSpot
+			node.Labels[v1.CapacityTypeLabelKey] = v1.CapacityTypeSpot
+			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{
+				MaxConsolidationReplacements: lo.ToPtr(3),
+				ConsolidationSplitFallback:   lo.ToPtr(true),
+			}))
+			applyTwoPodNode()
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			Expect(queue.GetCommands()).To(BeEmpty())
+			ExpectExists(ctx, env.Client, nodeClaim)
+			_, found := FindMetricWithLabelValues("karpenter_voluntary_disruption_consolidation_split_attempts_total", map[string]string{
+				"nodepool": nodePool.Name,
+			})
+			Expect(found).To(BeFalse())
+		})
 		It("will not split once the pass exhausts its attempt budget", func() {
 			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{
 				MaxConsolidationReplacements:  lo.ToPtr(3),

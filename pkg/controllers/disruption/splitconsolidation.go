@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/operator/options"
 )
 
@@ -82,18 +83,9 @@ func (b *SplitAttemptBudget) Remaining() int {
 //
 // Returns the command and whether the fallback produced one.
 func (c *consolidation) trySplitConsolidation(ctx context.Context, simOpts consolidationSimulationOptions, candidatePrice float64, candidates []*Candidate) (Command, bool) {
-	// Only the ordinary single-candidate path falls back, and a split retry never recurses.
-	if simOpts.newCapacityPriceLimit > 0 || len(candidates) != 1 {
-		return Command{}, false
-	}
 	opts := options.FromContext(ctx)
-	// Without room for a second replacement NodeClaim a split can never be accepted.
-	if !opts.ConsolidationSplitFallback || opts.MaxConsolidationReplacements < 2 {
-		return Command{}, false
-	}
-	candidate := candidates[0]
-	// A single pod always lands on a single node, and an unpriced candidate gives no ceiling.
-	if candidatePrice <= 0 || len(candidate.reschedulablePods) < 2 {
+	candidate, ok := splitCandidate(opts, simOpts, candidatePrice, candidates)
+	if !ok {
 		return Command{}, false
 	}
 	budget := SplitAttemptBudgetFromContext(ctx)
@@ -121,4 +113,29 @@ func (c *consolidation) trySplitConsolidation(ctx context.Context, simOpts conso
 		ObserveConsolidationSplitAttempt(candidate.NodePool.Name, SplitOutcomeCommand)
 		return cmd, true
 	}
+}
+
+// splitCandidate returns the candidate a split retry may act on, filtering out every case the retry
+// cannot turn into a command before it costs an attempt of the pass budget or a simulation.
+func splitCandidate(opts *options.Options, simOpts consolidationSimulationOptions, candidatePrice float64, candidates []*Candidate) (*Candidate, bool) {
+	// Only the ordinary single-candidate path falls back, and a split retry never recurses.
+	if simOpts.newCapacityPriceLimit > 0 || len(candidates) != 1 {
+		return nil, false
+	}
+	// Without room for a second replacement NodeClaim a split can never be accepted.
+	if !opts.ConsolidationSplitFallback || opts.MaxConsolidationReplacements < 2 {
+		return nil, false
+	}
+	candidate := candidates[0]
+	// A single pod always lands on a single node, and an unpriced candidate gives no ceiling.
+	if candidatePrice <= 0 || len(candidate.reschedulablePods) < 2 {
+		return nil, false
+	}
+	// A spot candidate's replacements route back through computeSpotToSpotConsolidation, which rejects everything
+	// while its feature gate is off. Spending attempts on a rejection that is decided before any simulation would
+	// let spot candidates exhaust the pass budget ahead of on-demand candidates that can still produce a command.
+	if candidate.capacityType == v1.CapacityTypeSpot && !opts.FeatureGates.SpotToSpotConsolidation {
+		return nil, false
+	}
+	return candidate, true
 }
