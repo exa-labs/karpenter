@@ -276,9 +276,11 @@ func (c *Cluster) DeepCopyNodes() StateNodes {
 
 // SimulationCopyNodes creates simulation-safe copies of all state nodes (see
 // StateNode.SimulationCopy for what is and is not shared with live state).
+// This takes the write lock because SimulationCopy fills the memoized request
+// totals on the live nodes.
 func (c *Cluster) SimulationCopyNodes() StateNodes {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	return lo.Map(lo.Values(c.nodes), func(n *StateNode, _ int) *StateNode {
 		return n.SimulationCopy()

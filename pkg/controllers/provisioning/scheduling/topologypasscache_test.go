@@ -58,6 +58,24 @@ func TestTopologyPassCachePodLists(t *testing.T) {
 	}
 }
 
+func TestTopologyPassCacheDistinguishesEverythingFromNothing(t *testing.T) {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "pod-1", Labels: map[string]string{"app": "a"}}}
+	kubeClient := fakecr.NewClientBuilder().WithObjects(pod).Build()
+	ctx := WithTopologyPassCache(context.Background(), NewTopologyPassCache())
+
+	// A nil selector parses to labels.Everything() and an unparseable one to labels.Nothing();
+	// both stringify to "" so they must not share a cache entry.
+	nothing := &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "app", Operator: "BogusOperator"}}}
+	none, err := listTopologyPods(ctx, kubeClient, "default", nothing)
+	if err != nil || len(none) != 0 {
+		t.Fatalf("expected the unparseable selector to match nothing, got %v %v", none, err)
+	}
+	all, err := listTopologyPods(ctx, kubeClient, "default", nil)
+	if err != nil || len(all) != 1 {
+		t.Fatalf("expected the nil selector to match everything, got %v %v", all, err)
+	}
+}
+
 func TestTopologyPassCacheNodeLookups(t *testing.T) {
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-1", Labels: map[string]string{"zone": "a"}}}
 	kubeClient := fakecr.NewClientBuilder().WithObjects(node).Build()

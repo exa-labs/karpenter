@@ -71,7 +71,13 @@ func listTopologyPods(ctx context.Context, kubeClient client.Client, namespace s
 		}
 		return podList.Items, nil
 	}
-	key := strings.Join([]string{namespace, opts.LabelSelector.String()}, "\x00")
+	// Key on the raw selector rather than the parsed one: labels.Everything() (nil selector) and
+	// labels.Nothing() (unparseable selector) both stringify to "" and must not share an entry.
+	rawKey := "<nil>"
+	if rawSelector != nil {
+		rawKey = rawSelector.String()
+	}
+	key := strings.Join([]string{namespace, rawKey}, "\x00")
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	if pods, ok := cache.podsByKey[key]; ok {
