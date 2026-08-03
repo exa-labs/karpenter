@@ -246,8 +246,11 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 		nc.InstanceTypeOptions = nc.InstanceTypeOptions.OrderByPrice(nc.Requirements)
 	}
 
+	// If all candidates are spot and any replacement can be spot, route through the spot-to-spot path so its feature
+	// gate and anti-churn protections apply. Replacement claims that can't satisfy the injected spot requirement will
+	// end up with no instance type options there and the consolidation is skipped.
 	if allExistingAreSpot &&
-		lo.EveryBy(results.NewNodeClaims, func(nc *pscheduling.NodeClaim) bool {
+		lo.SomeBy(results.NewNodeClaims, func(nc *pscheduling.NodeClaim) bool {
 			return nc.Requirements.Get(v1.CapacityTypeLabelKey).Has(v1.CapacityTypeSpot)
 		}) {
 		cmd, err := c.computeSpotToSpotConsolidation(ctx, candidates, results, candidatePrice)
@@ -426,9 +429,19 @@ func filterReplacementsByAggregatePrice(newNodeClaims []*pscheduling.NodeClaim, 
 		}
 		return nil
 	}
-	scale := candidatePrice / cheapestTotal
 	for i, nc := range newNodeClaims {
-		if _, err := nc.RemoveInstanceTypeOptionsByPriceAndMinValues(nc.Requirements, cheapest[i]*scale); err != nil {
+		// Use candidatePrice directly for a single replacement: the scaled form is equivalent in exact arithmetic but
+		// floating point rounding could let an equally-priced option survive the strict < comparison.
+		maxPrice := candidatePrice
+		if len(newNodeClaims) > 1 {
+			if cheapestTotal == 0 {
+				// All claims have a zero-priced cheapest option; split the budget evenly to avoid a NaN scale.
+				maxPrice = candidatePrice / float64(len(newNodeClaims))
+			} else {
+				maxPrice = cheapest[i] * (candidatePrice / cheapestTotal)
+			}
+		}
+		if _, err := nc.RemoveInstanceTypeOptionsByPriceAndMinValues(nc.Requirements, maxPrice); err != nil {
 			return err
 		}
 	}
