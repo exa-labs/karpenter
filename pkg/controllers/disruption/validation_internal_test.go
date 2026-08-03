@@ -66,8 +66,8 @@ func TestReplacementsMatchSimulationRejectsDifferentNodePool(t *testing.T) {
 }
 
 func TestReplacementsMatchSimulationRejectsConflictingRequirements(t *testing.T) {
-	zone := func(z string) *scheduling.Requirement {
-		return scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, z)
+	zone := func(zones ...string) *scheduling.Requirement {
+		return scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, zones...)
 	}
 	capacityType := func(ct string) *scheduling.Requirement {
 		return scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, ct)
@@ -84,10 +84,37 @@ func TestReplacementsMatchSimulationRejectsConflictingRequirements(t *testing.T)
 	}) {
 		t.Fatal("expected same instance type names with a conflicting zone requirement to not match")
 	}
+	// Partial overlap is not containment: a replacement allowed in {zone-1, zone-2} could launch in zone-1
+	// even though the fresh simulation only allows {zone-2, zone-3}.
+	partialOverlap := replacementFor(simulatedNodeClaim("pool-a", []string{"m5.large"}, zone("zone-1", "zone-2"), capacityType(v1.CapacityTypeSpot)))
+	if replacementsMatchSimulation([]*Replacement{partialOverlap}, []*pscheduling.NodeClaim{
+		simulatedNodeClaim("pool-a", []string{"m5.large"}, zone("zone-2", "zone-3"), capacityType(v1.CapacityTypeSpot)),
+	}) {
+		t.Fatal("expected a replacement with partially-overlapping zones to not match")
+	}
+	// Containment in the other direction is fine: the replacement's zones are a subset of the fresh claim's.
+	if !replacementsMatchSimulation([]*Replacement{partialOverlap}, []*pscheduling.NodeClaim{
+		simulatedNodeClaim("pool-a", []string{"m5.large"}, zone("zone-1", "zone-2", "zone-3"), capacityType(v1.CapacityTypeSpot)),
+	}) {
+		t.Fatal("expected a replacement whose zones are contained in the fresh claim's zones to match")
+	}
 	if replacementsMatchSimulation([]*Replacement{replacement}, []*pscheduling.NodeClaim{
 		simulatedNodeClaim("pool-a", []string{"m5.large"}, zone("zone-1"), capacityType(v1.CapacityTypeOnDemand)),
 	}) {
 		t.Fatal("expected same instance type names with a conflicting capacity type requirement to not match")
+	}
+}
+
+func TestReplacementsMatchSimulationRejectsDifferentTaints(t *testing.T) {
+	tainted := simulatedNodeClaim("pool-a", []string{"m5.large"})
+	tainted.Spec.Taints = []corev1.Taint{{Key: "dedicated", Value: "gpu", Effect: corev1.TaintEffectNoSchedule}}
+	if replacementsMatchSimulation([]*Replacement{replacementFor(simulatedNodeClaim("pool-a", []string{"m5.large"}))}, []*pscheduling.NodeClaim{tainted}) {
+		t.Fatal("expected a replacement without the fresh claim's taints to not match")
+	}
+	taintedReplacement := simulatedNodeClaim("pool-a", []string{"m5.large"})
+	taintedReplacement.Spec.Taints = []corev1.Taint{{Key: "dedicated", Value: "gpu", Effect: corev1.TaintEffectNoSchedule}}
+	if !replacementsMatchSimulation([]*Replacement{replacementFor(taintedReplacement)}, []*pscheduling.NodeClaim{tainted}) {
+		t.Fatal("expected identical taints to match")
 	}
 }
 

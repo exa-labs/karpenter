@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/samber/lo"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -356,7 +357,7 @@ func (v *validation) validateCommand(ctx context.Context, cmd Command, candidate
 
 // replacementsMatchSimulation reports whether there is a one-to-one matching between the command's replacements and
 // the simulated NodeClaims such that each replacement could still satisfy its matched simulated NodeClaim: same
-// NodePool, non-conflicting scheduling requirements, and instance type options that are a subset of the simulated
+// NodePool, same taints, scheduling requirements contained in the simulated claim's, and instance type options that are a subset of the simulated
 // NodeClaim's options. Uses Kuhn's augmenting-path maximum bipartite matching, which is polynomial in the number of
 // replacements, so it stays cheap even for large MAX_CONSOLIDATION_REPLACEMENTS values.
 func replacementsMatchSimulation(replacements []*Replacement, newNodeClaims []*scheduling.NodeClaim) bool {
@@ -392,16 +393,35 @@ func replacementsMatchSimulation(replacements []*Replacement, newNodeClaims []*s
 
 // replacementMatchesSimulatedNodeClaim reports whether a command's replacement is still a valid stand-in for a
 // simulated NodeClaim. Instance type names alone are not enough: the same instance type can be reachable through
-// different NodePools or scheduling constraints (zone, capacity type, taints), so we also require the same NodePool
-// and non-conflicting scheduling requirements.
+// different NodePools or scheduling constraints (zone, capacity type, taints), so we also require the same NodePool,
+// identical taints, and replacement requirements contained in the simulated claim's requirements (anything the
+// replacement is allowed to launch as must satisfy what the fresh simulation demands).
 func replacementMatchesSimulatedNodeClaim(replacement *Replacement, newNodeClaim *scheduling.NodeClaim) bool {
 	if replacement.NodePoolName != newNodeClaim.NodePoolName {
 		return false
 	}
-	if err := newNodeClaim.Requirements.Intersects(replacement.Requirements); err != nil {
+	if !taintsAreEqual(replacement.Spec.Taints, newNodeClaim.Spec.Taints) {
 		return false
 	}
+	for key := range newNodeClaim.Requirements {
+		if !replacement.Requirements.Get(key).SubsetOf(newNodeClaim.Requirements.Get(key)) {
+			return false
+		}
+	}
 	return instanceTypesAreSubset(replacement.InstanceTypeOptions, newNodeClaim.InstanceTypeOptions)
+}
+
+// taintsAreEqual reports whether two taint lists are equal, ignoring order.
+func taintsAreEqual(lhs, rhs []corev1.Taint) bool {
+	if len(lhs) != len(rhs) {
+		return false
+	}
+	for _, t := range lhs {
+		if !lo.ContainsBy(rhs, func(other corev1.Taint) bool { return t.MatchTaint(&other) && t.Value == other.Value }) {
+			return false
+		}
+	}
+	return true
 }
 
 // getValidationFailureReason categorizes validation errors into specific failure types
