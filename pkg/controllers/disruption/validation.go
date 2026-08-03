@@ -414,6 +414,12 @@ func replacementMatchesSimulatedNodeClaim(replacement *Replacement, newNodeClaim
 		return false
 	}
 	for key := range newNodeClaim.Requirements {
+		// the reservation ID requirement lists whichever reserved offerings a simulation run happened to reserve,
+		// so two independent runs can legitimately pick different sets; capacity type is still compared, so a
+		// reserved replacement must still match a reserved simulated claim
+		if key == cloudprovider.ReservationIDLabel {
+			continue
+		}
 		if !replacement.Requirements.Get(key).SubsetOf(newNodeClaim.Requirements.Get(key)) {
 			return false
 		}
