@@ -214,7 +214,9 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 	// consolidation remains N->1: it merges many nodes into one replacement.
 	maxReplacements := 1
 	if len(candidates) == 1 {
-		maxReplacements = options.FromContext(ctx).MaxConsolidationReplacements
+		// CLI validation enforces >= 1, but clamp so a zero value from a directly-constructed
+		// options struct fails safe to the classic 1->1 behavior
+		maxReplacements = max(1, options.FromContext(ctx).MaxConsolidationReplacements)
 	}
 	// record the required replacement count for every single-candidate simulation needing more than one
 	// replacement, whether or not it is within the configured limit
