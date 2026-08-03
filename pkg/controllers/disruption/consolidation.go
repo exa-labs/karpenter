@@ -191,13 +191,9 @@ func (c *consolidation) computeConsolidationWithOptions(ctx context.Context, sim
 			ObserveConsolidationCandidateSkip(consolidationType, candidates[0].NodePool.Name, reason)
 		}
 	}
-	schedulerOpts := []pscheduling.Options{pscheduling.IsConsolidationSimulation}
-	if simOpts.newCapacityPriceLimit > 0 {
-		schedulerOpts = append(schedulerOpts, pscheduling.NewNodeClaimPriceLimit(simOpts.newCapacityPriceLimit))
-	}
 	var err error
 	// Run scheduling simulation to compute consolidation option
-	results, err := SimulateScheduling(ctx, c.kubeClient, c.cluster, c.provisioner, c.clock, c.recorder, schedulerOpts, candidates...)
+	results, err := SimulateScheduling(ctx, c.kubeClient, c.cluster, c.provisioner, c.clock, c.recorder, consolidationSchedulerOptions(simOpts.newCapacityPriceLimit), candidates...)
 	if err != nil {
 		// if a candidate node is now deleting, just retry
 		if errors.Is(err, errCandidateDeleting) {
@@ -279,7 +275,7 @@ func (c *consolidation) computeConsolidationWithOptions(ctx context.Context, sim
 		lo.SomeBy(results.NewNodeClaims, func(nc *pscheduling.NodeClaim) bool {
 			return nc.Requirements.Get(v1.CapacityTypeLabelKey).Has(v1.CapacityTypeSpot)
 		}) {
-		cmd, err := c.computeSpotToSpotConsolidation(ctx, candidates, results, replacementPriceBudget, !simOpts.silent)
+		cmd, err := c.computeSpotToSpotConsolidation(ctx, candidates, results, replacementPriceBudget, simOpts)
 		if err == nil && cmd.Decision() == NoOpDecision {
 			if splitCmd, ok := c.trySplitConsolidation(ctx, simOpts, candidatePrice, candidates); ok {
 				return splitCmd, nil
@@ -314,14 +310,25 @@ func (c *consolidation) computeConsolidationWithOptions(ctx context.Context, sim
 	}
 
 	cmd := Command{
-		Candidates:          candidates,
-		Replacements:        replacementsFromNodeClaims(results.NewNodeClaims...),
-		Results:             results,
-		PoolDisruptionCosts: computePoolDisruptionCosts(candidates),
+		Candidates:            candidates,
+		Replacements:          replacementsFromNodeClaims(results.NewNodeClaims...),
+		Results:               results,
+		PoolDisruptionCosts:   computePoolDisruptionCosts(candidates),
+		NewCapacityPriceLimit: simOpts.newCapacityPriceLimit,
 	}
 	cmd.EmitCandidateEvents(c.recorder)
 
 	return cmd, nil
+}
+
+// consolidationSchedulerOptions returns the scheduler options a consolidation simulation runs under, capping the
+// price of the instance types new capacity may be launched from when the caller set a limit.
+func consolidationSchedulerOptions(newCapacityPriceLimit float64) []pscheduling.Options {
+	opts := []pscheduling.Options{pscheduling.IsConsolidationSimulation}
+	if newCapacityPriceLimit > 0 {
+		opts = append(opts, pscheduling.NewNodeClaimPriceLimit(newCapacityPriceLimit))
+	}
+	return opts
 }
 
 // Compute command to execute spot-to-spot consolidation if:
@@ -331,7 +338,8 @@ func (c *consolidation) computeConsolidationWithOptions(ctx context.Context, sim
 //     b. The current candidate is NOT part of the first 15 cheapest instance types inorder to avoid repeated consolidation.
 //
 // nolint:unparam
-func (c *consolidation) computeSpotToSpotConsolidation(ctx context.Context, candidates []*Candidate, results pscheduling.Results, candidatePrice float64, publishEvents bool) (Command, error) {
+func (c *consolidation) computeSpotToSpotConsolidation(ctx context.Context, candidates []*Candidate, results pscheduling.Results, candidatePrice float64, simOpts consolidationSimulationOptions) (Command, error) {
+	publishEvents := !simOpts.silent
 
 	// Spot consolidation is turned off.
 	if !options.FromContext(ctx).FeatureGates.SpotToSpotConsolidation {
@@ -396,10 +404,11 @@ func (c *consolidation) computeSpotToSpotConsolidation(ctx context.Context, cand
 	}
 
 	cmd := Command{
-		Candidates:          candidates,
-		Replacements:        replacementsFromNodeClaims(results.NewNodeClaims...),
-		Results:             results,
-		PoolDisruptionCosts: computePoolDisruptionCosts(candidates),
+		Candidates:            candidates,
+		Replacements:          replacementsFromNodeClaims(results.NewNodeClaims...),
+		Results:               results,
+		PoolDisruptionCosts:   computePoolDisruptionCosts(candidates),
+		NewCapacityPriceLimit: simOpts.newCapacityPriceLimit,
 	}
 	cmd.EmitCandidateEvents(c.recorder)
 

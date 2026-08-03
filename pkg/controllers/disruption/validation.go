@@ -315,7 +315,10 @@ func (v *validation) validateCommand(ctx context.Context, cmd Command, candidate
 	if len(candidates) == 0 {
 		return NewValidationError(fmt.Errorf("no candidates"))
 	}
-	results, err := SimulateScheduling(ctx, v.kubeClient, v.cluster, v.provisioner, v.clock, v.recorder, []scheduling.Options{scheduling.IsConsolidationSimulation}, candidates...)
+	// Re-simulate under the same new-capacity price ceiling the command was computed with, so a split fallback
+	// command is checked against the packing it came from rather than the single-replacement packing the
+	// unlimited simulation always produces for those candidates.
+	results, err := SimulateScheduling(ctx, v.kubeClient, v.cluster, v.provisioner, v.clock, v.recorder, consolidationSchedulerOptions(cmd.NewCapacityPriceLimit), candidates...)
 	if err != nil {
 		return fmt.Errorf("simluating scheduling, %w", err)
 	}

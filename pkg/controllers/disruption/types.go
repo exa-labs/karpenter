@@ -236,6 +236,12 @@ type Command struct {
 	Candidates          []*Candidate
 	Replacements        []*Replacement
 	PoolDisruptionCosts map[string]float64
+	// NewCapacityPriceLimit is the ceiling the simulation that produced this command placed on the price of the
+	// instance types it could launch new nodes from, zero when unlimited. Revalidation has to re-simulate under
+	// the same ceiling: a split fallback command exists precisely because the unlimited simulation packs the
+	// candidate's pods onto a single replacement, so revalidating it unlimited would always disagree on the
+	// replacement count.
+	NewCapacityPriceLimit float64
 }
 
 // Reason returns the disruption reason for this command.

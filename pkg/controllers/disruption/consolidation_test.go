@@ -2714,6 +2714,43 @@ var _ = Describe("Consolidation", func() {
 			}
 			ExpectNotFound(ctx, env.Client, nodeClaim, node)
 		})
+		It("splits a node through the real validator", func() {
+			// revalidation re-simulates the command, and only reproduces the split if it applies the same price
+			// ceiling - unlimited it packs both pods back onto one replacement and rejects the command
+			disruptionController = disruption.NewController(env.Clock, env.Client, prov, cloudProvider, recorder, cluster, queue, clusterCost, disruption.WithMethods(NewMethodsWithRealValidator()...))
+			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{
+				MaxConsolidationReplacements: lo.ToPtr(3),
+				ConsolidationSplitFallback:   lo.ToPtr(true),
+			}))
+			applyTwoPodNode()
+
+			finished := atomic.Bool{}
+			ExpectParallelized(
+				func() {
+					defer finished.Store(true)
+					ExpectSingletonReconciled(ctx, disruptionController)
+				},
+				func() {
+					// wait for the controller to block on the validation timeout
+					Eventually(env.Clock.HasWaiters, time.Second*5).Should(BeTrue())
+					Expect(finished.Load()).To(BeFalse())
+					ExpectExists(ctx, env.Client, nodeClaim)
+					// advance the clock so that the validation timeout expires
+					env.Clock.Step(31 * time.Second)
+					Eventually(finished.Load, 10*time.Second).Should(BeTrue())
+				},
+			)
+
+			cmds := queue.GetCommands()
+			Expect(cmds).To(HaveLen(1))
+			Expect(cmds[0].Replacements).To(HaveLen(2))
+			ExpectMakeNewNodeClaimsReady(ctx, env.Client, env.Clock, cluster, cloudProvider, cmds[0])
+			ExpectObjectReconciled(ctx, env.Client, queue, nodeClaim)
+			ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaim)
+
+			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(2))
+			ExpectNotFound(ctx, env.Client, nodeClaim, node)
+		})
 		It("will not split when the replacements don't clear the savings margin", func() {
 			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{
 				MaxConsolidationReplacements: lo.ToPtr(3),
