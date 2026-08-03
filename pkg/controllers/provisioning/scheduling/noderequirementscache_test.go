@@ -148,18 +148,42 @@ func TestNewExistingNodeDoesNotMutateSharedRequirements(t *testing.T) {
 	node := makeStateNode("uid-1", "100", map[string]string{corev1.LabelTopologyZone: "us-west-2a"})
 
 	shared := labelRequirementsForStateNode(cache, node)
+	merged := existingNodeRequirementsForStateNode(cache, node, shared)
 	topology := &Topology{domainGroups: map[string]TopologyDomainGroup{}}
-	existingNode := NewExistingNode(node, topology, nil, shared, corev1.ResourceList{}, nil, false)
+	existingNode := NewExistingNode(node, topology, nil, merged, corev1.ResourceList{}, nil, false)
 
 	if !existingNode.requirements.Has(corev1.LabelHostname) {
-		t.Fatalf("expected the existing node clone to gain the hostname requirement")
+		t.Fatalf("expected the existing node requirements to include the hostname requirement")
 	}
 	if shared.Has(corev1.LabelHostname) {
-		t.Fatalf("hostname requirement leaked into the shared cached requirements")
+		t.Fatalf("hostname requirement leaked into the shared label requirements")
 	}
 	cached := labelRequirementsForStateNode(cache, node)
 	if cached.Has(corev1.LabelHostname) {
-		t.Fatalf("hostname requirement leaked into the cache")
+		t.Fatalf("hostname requirement leaked into the label requirements cache entry")
+	}
+}
+
+func TestExistingNodeRequirementsCacheSharesEntries(t *testing.T) {
+	cache := NewNodeRequirementsCache()
+	node := makeStateNode("uid-1", "100", map[string]string{corev1.LabelTopologyZone: "us-west-2a"})
+
+	shared := labelRequirementsForStateNode(cache, node)
+	first := existingNodeRequirementsForStateNode(cache, node, shared)
+	second := existingNodeRequirementsForStateNode(cache, node, shared)
+	if !first.Has(corev1.LabelHostname) || first.Get(corev1.LabelTopologyZone).Any() != "us-west-2a" {
+		t.Fatalf("unexpected merged requirements: %v", first)
+	}
+	if fmt.Sprintf("%p", first[corev1.LabelHostname]) != fmt.Sprintf("%p", second[corev1.LabelHostname]) {
+		t.Fatalf("expected merged requirements to be shared from the cache")
+	}
+
+	// A resource version change must invalidate the merged entry.
+	updated := makeStateNode("uid-1", "101", map[string]string{corev1.LabelTopologyZone: "us-west-2b"})
+	updatedShared := labelRequirementsForStateNode(cache, updated)
+	third := existingNodeRequirementsForStateNode(cache, updated, updatedShared)
+	if third.Get(corev1.LabelTopologyZone).Any() != "us-west-2b" {
+		t.Fatalf("expected recomputed merged requirements after resource version change, got %v", third)
 	}
 }
 

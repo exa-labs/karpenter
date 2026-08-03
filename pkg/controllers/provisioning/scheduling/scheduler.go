@@ -173,13 +173,23 @@ func NewScheduler(
 		})
 	})
 	ConstructionPhaseDurationSeconds.Observe(time.Since(templatesStart).Seconds(), map[string]string{phaseLabel: phaseNodeClaimTemplates})
+	// The daemonset generation must be updated before any daemon-derived cache reads (overhead
+	// groups below, daemon pods/requests during existing node construction) so a daemonset change
+	// invalidates them all up front.
+	daemonOverheadCache := DaemonOverheadCacheFromContext(ctx)
+	if daemonOverheadCache != nil {
+		daemonOverheadCache.updateDaemonSetGeneration(daemonSetPods)
+	}
+	daemonGroupsStart := time.Now()
+	daemonOverheadGroups := buildDaemonOverheadGroups(ctx, daemonOverheadCache, templates, daemonSetPods)
+	ConstructionPhaseDurationSeconds.Observe(time.Since(daemonGroupsStart).Seconds(), map[string]string{phaseLabel: phaseDaemonOverheadGroups})
 	s := &Scheduler{
 		uuid:                 uuid.NewUUID(),
 		kubeClient:           kubeClient,
 		nodeClaimTemplates:   templates,
 		topology:             topology,
 		cluster:              cluster,
-		daemonOverheadGroups: buildDaemonOverheadGroups(ctx, templates, daemonSetPods),
+		daemonOverheadGroups: daemonOverheadGroups,
 		cachedPodData:        map[types.UID]*PodData{}, // cache pod data to avoid having to continually recompute it
 		volumeReqsByPod:      volumeReqsByPod,          // Volume requirements per pod
 		recorder:             recorder,
@@ -196,11 +206,8 @@ func NewScheduler(
 		allocator:               allocator,
 		instanceTypes:           instanceTypes,
 		cachedResourceClaims:    map[types.NamespacedName]*resourcev1.ResourceClaim{},
-		daemonOverheadCache:     DaemonOverheadCacheFromContext(ctx),
+		daemonOverheadCache:     daemonOverheadCache,
 		nodeRequirementsCache:   NodeRequirementsCacheFromContext(ctx),
-	}
-	if s.daemonOverheadCache != nil {
-		s.daemonOverheadCache.updateDaemonSetGeneration(daemonSetPods)
 	}
 
 	npByName := lo.SliceToMap(nodePools, func(np *v1.NodePool) (string, *v1.NodePool) {
@@ -811,7 +818,8 @@ func (s *Scheduler) calculateExistingNodeClaims(ctx context.Context, stateNodes 
 		nodeRequirements := labelRequirementsForStateNode(s.nodeRequirementsCache, node)
 		daemonRequests := s.getDaemonRequests(ctx, node, taints, nodeRequirements, daemonSetPods)
 		isUnderConsolidateAfter := enforceConsolidateAfter && disruption.IsUnderConsolidateAfter(nodePoolMap[node.Name()], node.NodeClaim, s.clock)
-		s.existingNodes = append(s.existingNodes, NewExistingNode(node, s.topology, taints, nodeRequirements, daemonRequests, s.instanceTypeForNode(node), isUnderConsolidateAfter))
+		existingNodeRequirements := existingNodeRequirementsForStateNode(s.nodeRequirementsCache, node, nodeRequirements)
+		s.existingNodes = append(s.existingNodes, NewExistingNode(node, s.topology, taints, existingNodeRequirements, daemonRequests, s.instanceTypeForNode(node), isUnderConsolidateAfter))
 		s.updateRemainingResources(node)
 	}
 	s.sortExistingNodes()
@@ -1013,38 +1021,60 @@ type DaemonOverheadGroup struct {
 // buildDaemonOverheadGroups groups instance types by their compatible daemon pods and computes the following for NodeClaimTemplate and group
 // - Overhead required for daemons to schedule for any node provisioned by the NodeClaimTemplate
 // - Requested host ports for DaemonSet pods
-func buildDaemonOverheadGroups(ctx context.Context, nodeClaimTemplates []*NodeClaimTemplate, daemonSetPods []*corev1.Pod) map[*NodeClaimTemplate][]DaemonOverheadGroup {
+//
+// The per-template result is a pure function of the template (NodePool spec plus its instance type
+// set, covered by the template's cache fingerprint) and the daemonset pods (covered by the cache's
+// daemonset generation), so it is memoized per pass. Cached groups are shared across schedulers
+// and treated as read-only; the only mutable member (HostPortUsage) is deep copied per NodeClaim
+// by NewNodeClaim before any mutation.
+func buildDaemonOverheadGroups(ctx context.Context, cache *DaemonOverheadCache, nodeClaimTemplates []*NodeClaimTemplate, daemonSetPods []*corev1.Pod) map[*NodeClaimTemplate][]DaemonOverheadGroup {
 	return lo.SliceToMap(nodeClaimTemplates, func(nct *NodeClaimTemplate) (*NodeClaimTemplate, []DaemonOverheadGroup) {
-		groups := map[string]*DaemonOverheadGroup{}
-		for _, it := range nct.InstanceTypeOptions {
-			compatible := lo.Filter(daemonSetPods, func(p *corev1.Pod, _ int) bool {
-				if pod.HasDRARequirements(p) && karpopts.FromContext(ctx).IgnoreDRARequests {
-					return false
-				}
-				return isDaemonPodCompatible(nct, it, p)
-			})
-			key := podSetKey(compatible)
-			if g, ok := groups[key]; ok {
-				g.InstanceTypes = append(g.InstanceTypes, it)
-			} else {
-				var overhead corev1.ResourceList
-				if len(compatible) > 0 {
-					overhead = resources.RequestsForPods(compatible...)
-				}
-				hostPortUsage := scheduling.NewHostPortUsage()
-				for _, p := range compatible {
-					hostPortUsage.Add(p, scheduling.GetHostPorts(p))
-				}
-				groups[key] = &DaemonOverheadGroup{
-					InstanceTypes:  []*cloudprovider.InstanceType{it},
-					DaemonOverhead: overhead,
-					HostPortUsage:  hostPortUsage,
-				}
+		if cache == nil || !nct.cacheFingerprintValid {
+			if cache != nil {
+				DaemonOverheadGroupCacheEventsTotal.Inc(map[string]string{outcomeLabel: cacheOutcomeBypass})
+			}
+			return nct, buildDaemonOverheadGroupsForTemplate(ctx, nct, daemonSetPods)
+		}
+		if groups, ok := cache.overheadGroups(nct.NodePoolName, nct.cacheFingerprint); ok {
+			DaemonOverheadGroupCacheEventsTotal.Inc(map[string]string{outcomeLabel: cacheOutcomeHit})
+			return nct, groups
+		}
+		DaemonOverheadGroupCacheEventsTotal.Inc(map[string]string{outcomeLabel: cacheOutcomeMiss})
+		groups := buildDaemonOverheadGroupsForTemplate(ctx, nct, daemonSetPods)
+		cache.setOverheadGroups(nct.NodePoolName, nct.cacheFingerprint, groups)
+		return nct, groups
+	})
+}
+
+func buildDaemonOverheadGroupsForTemplate(ctx context.Context, nct *NodeClaimTemplate, daemonSetPods []*corev1.Pod) []DaemonOverheadGroup {
+	groups := map[string]*DaemonOverheadGroup{}
+	for _, it := range nct.InstanceTypeOptions {
+		compatible := lo.Filter(daemonSetPods, func(p *corev1.Pod, _ int) bool {
+			if pod.HasDRARequirements(p) && karpopts.FromContext(ctx).IgnoreDRARequests {
+				return false
+			}
+			return isDaemonPodCompatible(nct, it, p)
+		})
+		key := podSetKey(compatible)
+		if g, ok := groups[key]; ok {
+			g.InstanceTypes = append(g.InstanceTypes, it)
+		} else {
+			var overhead corev1.ResourceList
+			if len(compatible) > 0 {
+				overhead = resources.RequestsForPods(compatible...)
+			}
+			hostPortUsage := scheduling.NewHostPortUsage()
+			for _, p := range compatible {
+				hostPortUsage.Add(p, scheduling.GetHostPorts(p))
+			}
+			groups[key] = &DaemonOverheadGroup{
+				InstanceTypes:  []*cloudprovider.InstanceType{it},
+				DaemonOverhead: overhead,
+				HostPortUsage:  hostPortUsage,
 			}
 		}
-		result := lo.Map(lo.Values(groups), func(g *DaemonOverheadGroup, _ int) DaemonOverheadGroup { return *g })
-		return nct, result
-	})
+	}
+	return lo.Map(lo.Values(groups), func(g *DaemonOverheadGroup, _ int) DaemonOverheadGroup { return *g })
 }
 
 // podSetKey creates a deterministic key from a list of pods for grouping.

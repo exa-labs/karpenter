@@ -40,14 +40,25 @@ type DaemonOverheadCache struct {
 	mu                       sync.RWMutex
 	daemonPodsByKey          map[string][]*corev1.Pod
 	daemonRequestsByKey      map[string]corev1.ResourceList
+	overheadGroupsByPool     map[string]overheadGroupsCacheEntry
 	daemonSetGeneration      string
 	daemonSetGenerationValid bool
 }
 
+// overheadGroupsCacheEntry stores the daemon overhead groups computed for one NodeClaimTemplate,
+// keyed by the template's cache fingerprint so any change to the NodePool spec or its instance
+// type set invalidates the entry. DaemonSet changes invalidate the whole cache via
+// updateDaemonSetGeneration.
+type overheadGroupsCacheEntry struct {
+	fingerprint uint64
+	groups      []DaemonOverheadGroup
+}
+
 func NewDaemonOverheadCache() *DaemonOverheadCache {
 	return &DaemonOverheadCache{
-		daemonPodsByKey:     map[string][]*corev1.Pod{},
-		daemonRequestsByKey: map[string]corev1.ResourceList{},
+		daemonPodsByKey:      map[string][]*corev1.Pod{},
+		daemonRequestsByKey:  map[string]corev1.ResourceList{},
+		overheadGroupsByPool: map[string]overheadGroupsCacheEntry{},
 	}
 }
 
@@ -58,6 +69,7 @@ func (c *DaemonOverheadCache) updateDaemonSetGeneration(daemonSetPods []*corev1.
 	if !ok || !c.daemonSetGenerationValid || c.daemonSetGeneration != generation {
 		c.daemonPodsByKey = map[string][]*corev1.Pod{}
 		c.daemonRequestsByKey = map[string]corev1.ResourceList{}
+		c.overheadGroupsByPool = map[string]overheadGroupsCacheEntry{}
 		c.daemonSetGeneration = generation
 		c.daemonSetGenerationValid = ok
 	}
@@ -161,4 +173,24 @@ func (c *DaemonOverheadCache) setDaemonRequests(key string, requests corev1.Reso
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.daemonRequestsByKey[key] = requests.DeepCopy()
+}
+
+// overheadGroups returns the cached daemon overhead groups for a NodePool when the template
+// fingerprint matches. The returned slice and its contents are shared across schedulers and MUST
+// be treated as read-only; NewNodeClaim already deep copies the per-NodeClaim mutable piece
+// (HostPortUsage) before any mutation.
+func (c *DaemonOverheadCache) overheadGroups(nodePoolName string, fingerprint uint64) ([]DaemonOverheadGroup, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	entry, ok := c.overheadGroupsByPool[nodePoolName]
+	if !ok || entry.fingerprint != fingerprint {
+		return nil, false
+	}
+	return entry.groups, true
+}
+
+func (c *DaemonOverheadCache) setOverheadGroups(nodePoolName string, fingerprint uint64, groups []DaemonOverheadGroup) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.overheadGroupsByPool[nodePoolName] = overheadGroupsCacheEntry{fingerprint: fingerprint, groups: groups}
 }

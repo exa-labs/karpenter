@@ -44,9 +44,12 @@ type ExistingNode struct {
 	instanceType *cloudprovider.InstanceType
 }
 
-// NewExistingNode constructs an ExistingNode. labelRequirements holds the node's label-derived
-// requirements; it may be shared (e.g. from a pass-scoped cache) and is cloned before mutation.
-func NewExistingNode(n *state.StateNode, topology *Topology, taints []v1.Taint, labelRequirements scheduling.Requirements, daemonResources v1.ResourceList, instanceType *cloudprovider.InstanceType, isUnderConsolidateAfter bool) *ExistingNode {
+// NewExistingNode constructs an ExistingNode. requirements holds the node's label-derived
+// requirements including its hostname requirement; it may be shared with other ExistingNodes
+// (e.g. from a pass-scoped cache) and MUST be treated as read-only. That is safe because
+// scheduling never mutates an ExistingNode's requirements map in place: Add replaces the map
+// with a freshly built one.
+func NewExistingNode(n *state.StateNode, topology *Topology, taints []v1.Taint, requirements scheduling.Requirements, daemonResources v1.ResourceList, instanceType *cloudprovider.InstanceType, isUnderConsolidateAfter bool) *ExistingNode {
 	// The state node passed in here must be a deep copy from cluster state as we modify it
 	// the remaining daemonResources to schedule are the total daemonResources minus what has already scheduled
 	resources.SubtractFrom(daemonResources, n.DaemonSetRequests())
@@ -66,11 +69,10 @@ func NewExistingNode(n *state.StateNode, topology *Topology, taints []v1.Taint, 
 		cachedTaints:            taints,
 		topology:                topology,
 		remainingResources:      resources.Subtract(available, daemonResources),
-		requirements:            scheduling.NewRequirements(labelRequirements.Values()...),
+		requirements:            requirements,
 		isUnderConsolidateAfter: isUnderConsolidateAfter,
 		instanceType:            instanceType,
 	}
-	node.requirements.Add(scheduling.NewRequirement(v1.LabelHostname, v1.NodeSelectorOpIn, n.HostName()))
 	topology.Register(v1.LabelHostname, n.HostName())
 	return node
 }
