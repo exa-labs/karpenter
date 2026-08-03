@@ -134,6 +134,7 @@ func NewControllers(
 
 	if !options.FromContext(ctx).DisableClusterStateObservability {
 		controllers = append(controllers,
+			disruption.NewCensusController(disruption.MakeConsolidation(clock, cluster, kubeClient, p, cloudProvider, recorder, disruptionQueue)),
 			metricspod.NewController(kubeClient, cluster),
 			metricsnodepool.NewController(kubeClient, cloudProvider, clusterCost),
 			metricsnode.NewController(cluster),
