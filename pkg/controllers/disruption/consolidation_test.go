@@ -2524,6 +2524,43 @@ var _ = Describe("Consolidation", func() {
 			}
 			ExpectNotFound(ctx, env.Client, nodeClaim, node)
 		})
+		It("can replace a node with multiple cheaper nodes through the real validator", func() {
+			disruptionController = disruption.NewController(env.Clock, env.Client, prov, cloudProvider, recorder, cluster, queue, clusterCost, disruption.WithMethods(NewMethodsWithRealValidator()...))
+			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{MaxConsolidationReplacements: lo.ToPtr(3)}))
+			pods := makePods(2)
+			ExpectApplied(ctx, env.Client, rs, pods[0], pods[1], node, nodeClaim, nodePool)
+			ExpectManualBinding(ctx, env.Client, pods[0], node)
+			ExpectManualBinding(ctx, env.Client, pods[1], node)
+
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
+
+			finished := atomic.Bool{}
+			ExpectParallelized(
+				func() {
+					defer finished.Store(true)
+					ExpectSingletonReconciled(ctx, disruptionController)
+				},
+				func() {
+					// wait for the controller to block on the validation timeout
+					Eventually(env.Clock.HasWaiters, time.Second*5).Should(BeTrue())
+					Expect(finished.Load()).To(BeFalse())
+					ExpectExists(ctx, env.Client, nodeClaim)
+					// advance the clock so that the validation timeout expires
+					env.Clock.Step(31 * time.Second)
+					Eventually(finished.Load, 10*time.Second).Should(BeTrue())
+				},
+			)
+
+			cmds := queue.GetCommands()
+			Expect(cmds).To(HaveLen(1))
+			Expect(cmds[0].Replacements).To(HaveLen(2))
+			ExpectMakeNewNodeClaimsReady(ctx, env.Client, env.Clock, cluster, cloudProvider, cmds[0])
+			ExpectObjectReconciled(ctx, env.Client, queue, nodeClaim)
+			ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaim)
+
+			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(2))
+			ExpectNotFound(ctx, env.Client, nodeClaim, node)
+		})
 		It("will not replace a node with multiple nodes if the aggregate price is not cheaper", func() {
 			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{MaxConsolidationReplacements: lo.ToPtr(3)}))
 			// 2 x 0.6 > 1.0, so splitting the node is not a savings
