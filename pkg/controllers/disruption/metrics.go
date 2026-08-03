@@ -47,17 +47,17 @@ const (
 )
 
 const (
-	PassOutcomeCompleted              = "completed"
-	PassOutcomeTimedOut               = "timed_out"
-	PassOutcomeBudgetConstrained      = "budget_constrained"
-	PassOutcomeNoOp                   = "no_op"
+	PassOutcomeCompleted         = "completed"
+	PassOutcomeTimedOut          = "timed_out"
+	PassOutcomeBudgetConstrained = "budget_constrained"
+	PassOutcomeNoOp              = "no_op"
 	// CandidateSkipBudgetExhausted marks a single-node candidate whose NodePool
 	// has zero disruptions currently allowed by its budget.
 	CandidateSkipBudgetExhausted = "budget_exhausted"
 	// CandidateSkipOverBudgetAllowance marks a multi-node candidate that did not
 	// fit in the batch bounded by its NodePool's per-pass disruption allowance.
 	// The budget may be entirely unused; this is batch-size bookkeeping.
-	CandidateSkipOverBudgetAllowance = "over_budget_allowance"
+	CandidateSkipOverBudgetAllowance  = "over_budget_allowance"
 	CandidateSkipThreshold            = "cannot_pass_threshold"
 	CandidateSkipNoOp                 = "noop_decision"
 	CandidateSkipComputeError         = "compute_error"
