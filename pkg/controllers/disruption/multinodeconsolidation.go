@@ -82,12 +82,23 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 	// and only considering a number of nodes that can be disrupted.
 	disruptableCandidates := make([]*Candidate, 0, len(candidates))
 	constrainedByBudgets := false
+	// Snapshot each pool's allowance at pass start so a pool that entered the
+	// pass with zero allowance (real budget saturation) is distinguishable from
+	// one whose allowance was consumed by earlier candidates in this batch.
+	initialBudget := make(map[string]int, len(disruptionBudgetMapping))
+	for nodePool, allowed := range disruptionBudgetMapping {
+		initialBudget[nodePool] = allowed
+	}
 	for _, candidate := range candidates {
 		// If there's disruptions allowed for the candidate's nodepool,
 		// add it to the list of candidates, and decrement the budget.
 		if disruptionBudgetMapping[candidate.NodePool.Name] == 0 {
 			constrainedByBudgets = true
-			ObserveConsolidationCandidateSkip(m.ConsolidationType(), candidate.NodePool.Name, CandidateSkipSimBatchOverBudgetAllowance)
+			skipReason := CandidateSkipSimBatchOverBudgetAllowance
+			if initialBudget[candidate.NodePool.Name] == 0 {
+				skipReason = CandidateSkipBudgetExhausted
+			}
+			ObserveConsolidationCandidateSkip(m.ConsolidationType(), candidate.NodePool.Name, skipReason)
 			continue
 		}
 		// set constrainedByBudgets to true if any node was a candidate but was constrained by a budget
