@@ -53,10 +53,10 @@ func BenchmarkNodeClaimTemplateConstruction(b *testing.B) {
 	b.Run("cached", func(b *testing.B) {
 		ctx := WithNodeClaimTemplateCache(context.Background(), NewNodeClaimTemplateCache())
 		ctx = WithInstanceTypeRevisions(ctx, map[string]uint64{"pool": 1})
-		nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, build) // warm
+		nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, 0, build) // warm
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if nct, ok := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, build); !ok || nct == nil {
+			if nct, ok := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, 0, build); !ok || nct == nil {
 				b.Fatal("expected a template")
 			}
 		}

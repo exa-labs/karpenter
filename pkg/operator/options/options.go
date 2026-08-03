@@ -91,6 +91,9 @@ type Options struct {
 	MinValuesPolicy                  MinValuesPolicy
 	IgnoreDRARequests                bool // NOTE: This flag will be removed once formal DRA support is GA in Karpenter.
 	MaxConsolidationReplacements     int
+	ConsolidationSplitFallback       bool
+	ConsolidationSplitMaxAttempts    int
+	ConsolidationSplitMinSavings     float64
 	FeatureGates                     FeatureGates
 }
 
@@ -134,6 +137,9 @@ func (o *Options) AddFlags(fs *FlagSet) {
 	fs.StringVar(&o.preferencePolicyRaw, "preference-policy", env.WithDefaultString("PREFERENCE_POLICY", string(PreferencePolicyRespect)), "How the Karpenter scheduler should treat preferences. Preferences include preferredDuringSchedulingIgnoreDuringExecution node and pod affinities/anti-affinities and ScheduleAnyways topologySpreadConstraints. Can be one of 'Ignore' and 'Respect'")
 	fs.StringVar(&o.minValuesPolicyRaw, "min-values-policy", env.WithDefaultString("MIN_VALUES_POLICY", string(MinValuesPolicyStrict)), "Min values policy for scheduling. Options include 'Strict' for existing behavior where min values are strictly enforced or 'BestEffort' where Karpenter relaxes min values when it isn't satisfied.")
 	fs.IntVar(&o.MaxConsolidationReplacements, "max-consolidation-replacements", env.WithDefaultInt("MAX_CONSOLIDATION_REPLACEMENTS", 1), "The maximum number of replacement nodes a single consolidation candidate may be split into. 1 preserves the classic 1->1 behavior; higher values allow bounded 1->N consolidation (e.g. replacing one large on-demand node with several smaller spot nodes) when the aggregate replacement price is lower.")
+	fs.BoolVarWithEnv(&o.ConsolidationSplitFallback, "consolidation-split-fallback", "CONSOLIDATION_SPLIT_FALLBACK", false, "When set, a single-node consolidation candidate that no cheaper single replacement can absorb is re-simulated with the candidate's own price as a ceiling on new capacity, so the scheduler packs its pods onto several cheaper nodes instead. Bounded by max-consolidation-replacements and consolidation-split-max-attempts.")
+	fs.IntVar(&o.ConsolidationSplitMaxAttempts, "consolidation-split-max-attempts", env.WithDefaultInt("CONSOLIDATION_SPLIT_MAX_ATTEMPTS", 50), "The maximum number of split fallback simulations a single consolidation pass may run. Each attempt costs an extra scheduling simulation, so this caps how much of the pass timeout the fallback can consume at the expense of candidate traversal depth. 0 disables the fallback.")
+	fs.Float64Var(&o.ConsolidationSplitMinSavings, "consolidation-split-min-savings", env.WithDefaultFloat64("CONSOLIDATION_SPLIT_MIN_SAVINGS", 0.05), "The fraction of a candidate's price that a split replacement must save before it is accepted, on top of the usual cheaper-than-candidate check. Guards against churning a node into several nodes for a negligible price difference.")
 	fs.BoolVarWithEnv(&o.IgnoreDRARequests, "ignore-dra-requests", "IGNORE_DRA_REQUESTS", true, "When set, Karpenter will ignore pods' DRA requests during scheduling simulations. NOTE: This flag will be removed once formal DRA support is GA in Karpenter.")
 	fs.StringVar(&o.FeatureGates.inputStr, "feature-gates", env.WithDefaultString("FEATURE_GATES", "NodeRepair=false,ReservedCapacity=true,SpotToSpotConsolidation=false,NodeOverlay=false,StaticCapacity=false,CapacityBuffer=false"), "Optional features can be enabled / disabled using feature gates. Current options are: NodeRepair, ReservedCapacity, SpotToSpotConsolidation, NodeOverlay, StaticCapacity, and CapacityBuffer.")
 }
@@ -157,8 +163,8 @@ func (o *Options) Parse(fs *FlagSet, args ...string) error {
 	if o.CPURequests <= 0 {
 		o.CPURequests = 1000
 	}
-	if o.MaxConsolidationReplacements < 1 {
-		return fmt.Errorf("validating cli flags / env vars, MAX_CONSOLIDATION_REPLACEMENTS must be >= 1, got %d", o.MaxConsolidationReplacements)
+	if err := o.validateConsolidation(); err != nil {
+		return err
 	}
 	gates, err := ParseFeatureGates(o.FeatureGates.inputStr)
 	if err != nil {
@@ -167,6 +173,19 @@ func (o *Options) Parse(fs *FlagSet, args ...string) error {
 	o.FeatureGates = gates
 	o.PreferencePolicy = PreferencePolicy(o.preferencePolicyRaw)
 	o.MinValuesPolicy = MinValuesPolicy(o.minValuesPolicyRaw)
+	return nil
+}
+
+func (o *Options) validateConsolidation() error {
+	if o.MaxConsolidationReplacements < 1 {
+		return fmt.Errorf("validating cli flags / env vars, MAX_CONSOLIDATION_REPLACEMENTS must be >= 1, got %d", o.MaxConsolidationReplacements)
+	}
+	if o.ConsolidationSplitMaxAttempts < 0 {
+		return fmt.Errorf("validating cli flags / env vars, CONSOLIDATION_SPLIT_MAX_ATTEMPTS must be >= 0, got %d", o.ConsolidationSplitMaxAttempts)
+	}
+	if o.ConsolidationSplitMinSavings < 0 || o.ConsolidationSplitMinSavings >= 1 {
+		return fmt.Errorf("validating cli flags / env vars, CONSOLIDATION_SPLIT_MIN_SAVINGS must be in [0, 1), got %f", o.ConsolidationSplitMinSavings)
+	}
 	return nil
 }
 

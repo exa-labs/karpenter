@@ -29,6 +29,7 @@ import (
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
+	"sigs.k8s.io/karpenter/pkg/operator/options"
 )
 
 var SingleNodeConsolidationTimeoutDuration = 3 * time.Minute
@@ -61,6 +62,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 	ctx = scheduling.WithReservationCapacityCache(ctx, scheduling.NewReservationCapacityCache())
 	ctx = scheduling.WithNodeClaimTemplateCache(ctx, scheduling.NewNodeClaimTemplateCache())
 	ctx = scheduling.WithTopologyPassCache(ctx, scheduling.NewTopologyPassCache())
+	ctx = WithSplitAttemptBudget(ctx, NewSplitAttemptBudget(options.FromContext(ctx).ConsolidationSplitMaxAttempts))
 	depth := 0
 	evaluatedCandidateDepthByNodePool := map[string]int{}
 	outcome := PassOutcomeNoOp

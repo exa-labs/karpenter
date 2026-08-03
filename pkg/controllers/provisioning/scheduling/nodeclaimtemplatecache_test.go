@@ -60,11 +60,11 @@ func TestNodeClaimTemplateCacheReusesResultOnHit(t *testing.T) {
 	ctx = WithInstanceTypeRevisions(ctx, map[string]uint64{"pool": 7})
 
 	calls := 0
-	first, ok := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, templateCacheBuild(np, its, &calls))
+	first, ok := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, 0, templateCacheBuild(np, its, &calls))
 	if !ok || first == nil {
 		t.Fatal("expected a template on miss")
 	}
-	second, ok := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, templateCacheBuild(np, its, &calls))
+	second, ok := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, 0, templateCacheBuild(np, its, &calls))
 	if !ok || second == nil {
 		t.Fatal("expected a template on hit")
 	}
@@ -86,12 +86,12 @@ func TestNodeClaimTemplateCacheHandsOutIndependentCopies(t *testing.T) {
 	ctx = WithInstanceTypeRevisions(ctx, map[string]uint64{"pool": 7})
 
 	calls := 0
-	first, _ := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, templateCacheBuild(np, its, &calls))
+	first, _ := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, 0, templateCacheBuild(np, its, &calls))
 	// simulate the in-place mutations NodeClaim finalization can perform
 	first.InstanceTypeOptions[0], first.InstanceTypeOptions[1] = first.InstanceTypeOptions[1], first.InstanceTypeOptions[0]
 	first.Requirements.Add(scheduling.NewRequirement("mutated-key", corev1.NodeSelectorOpIn, "value"))
 
-	second, _ := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, templateCacheBuild(np, its, &calls))
+	second, _ := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, 0, templateCacheBuild(np, its, &calls))
 	if second.InstanceTypeOptions[0].Name != "it-a" {
 		t.Fatalf("expected slice mutation of a previous result to not leak, got %q first", second.InstanceTypeOptions[0].Name)
 	}
@@ -115,13 +115,13 @@ func TestNodeClaimTemplateCacheIsolatesObjectMetaMaps(t *testing.T) {
 		nct.Labels = map[string]string{"existing": "value"}
 		return nct
 	}
-	first, _ := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, build)
+	first, _ := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, 0, build)
 	// simulate the scheduler writing the min-values-relaxed annotation into a NodeClaim
 	// that shallow-copied this template
 	first.Annotations[v1.NodeClaimMinValuesRelaxedAnnotationKey] = "true"
 	first.Labels["mutated"] = "true"
 
-	second, _ := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, build)
+	second, _ := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, 0, build)
 	if calls != 1 {
 		t.Fatalf("expected build to run once, ran %d times", calls)
 	}
@@ -151,12 +151,12 @@ func TestNodeClaimTemplateCacheIsolatesRequirementMinValues(t *testing.T) {
 		nct.Requirements.Add(scheduling.NewRequirementWithFlexibility(corev1.LabelInstanceTypeStable, corev1.NodeSelectorOpIn, &minValues, "it-a", "it-b"))
 		return nct
 	}
-	first, _ := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyBestEffort, build)
+	first, _ := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyBestEffort, 0, build)
 	// simulate the best-effort relaxation writing MinValues on the requirement in place
 	relaxed := 1
 	first.Requirements.Get(corev1.LabelInstanceTypeStable).MinValues = &relaxed
 
-	second, _ := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyBestEffort, build)
+	second, _ := nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyBestEffort, 0, build)
 	if calls != 1 {
 		t.Fatalf("expected build to run once, ran %d times", calls)
 	}
@@ -176,10 +176,10 @@ func TestNodeClaimTemplateCacheCachesNegativeResults(t *testing.T) {
 		calls++
 		return nil
 	}
-	if _, ok := nodeClaimTemplateWithCache(ctx, np, nil, karpopts.MinValuesPolicyStrict, build); ok {
+	if _, ok := nodeClaimTemplateWithCache(ctx, np, nil, karpopts.MinValuesPolicyStrict, 0, build); ok {
 		t.Fatal("expected no template for a filtered-out NodePool")
 	}
-	if _, ok := nodeClaimTemplateWithCache(ctx, np, nil, karpopts.MinValuesPolicyStrict, build); ok {
+	if _, ok := nodeClaimTemplateWithCache(ctx, np, nil, karpopts.MinValuesPolicyStrict, 0, build); ok {
 		t.Fatal("expected cached negative result")
 	}
 	if calls != 1 {
@@ -194,8 +194,8 @@ func TestNodeClaimTemplateCacheRecomputesOnRevisionChange(t *testing.T) {
 	ctx := WithNodeClaimTemplateCache(context.Background(), cache)
 
 	calls := 0
-	nodeClaimTemplateWithCache(WithInstanceTypeRevisions(ctx, map[string]uint64{"pool": 1}), np, its, karpopts.MinValuesPolicyStrict, templateCacheBuild(np, its, &calls))
-	nodeClaimTemplateWithCache(WithInstanceTypeRevisions(ctx, map[string]uint64{"pool": 2}), np, its, karpopts.MinValuesPolicyStrict, templateCacheBuild(np, its, &calls))
+	nodeClaimTemplateWithCache(WithInstanceTypeRevisions(ctx, map[string]uint64{"pool": 1}), np, its, karpopts.MinValuesPolicyStrict, 0, templateCacheBuild(np, its, &calls))
+	nodeClaimTemplateWithCache(WithInstanceTypeRevisions(ctx, map[string]uint64{"pool": 2}), np, its, karpopts.MinValuesPolicyStrict, 0, templateCacheBuild(np, its, &calls))
 	if calls != 2 {
 		t.Fatalf("expected revision change to recompute, build ran %d times", calls)
 	}
@@ -208,17 +208,17 @@ func TestNodeClaimTemplateCacheRecomputesOnGenerationAndUIDChange(t *testing.T) 
 	ctx = WithInstanceTypeRevisions(ctx, map[string]uint64{"pool": 1})
 
 	calls := 0
-	nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, templateCacheBuild(np, its, &calls))
+	nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, 0, templateCacheBuild(np, its, &calls))
 
 	edited := np.DeepCopy()
 	edited.Generation = np.Generation + 1
-	nodeClaimTemplateWithCache(ctx, edited, its, karpopts.MinValuesPolicyStrict, templateCacheBuild(edited, its, &calls))
+	nodeClaimTemplateWithCache(ctx, edited, its, karpopts.MinValuesPolicyStrict, 0, templateCacheBuild(edited, its, &calls))
 	if calls != 2 {
 		t.Fatalf("expected generation change to recompute, build ran %d times", calls)
 	}
 
 	recreated := domainGroupCacheNodePool("pool", "uid-recreated")
-	nodeClaimTemplateWithCache(ctx, recreated, its, karpopts.MinValuesPolicyStrict, templateCacheBuild(recreated, its, &calls))
+	nodeClaimTemplateWithCache(ctx, recreated, its, karpopts.MinValuesPolicyStrict, 0, templateCacheBuild(recreated, its, &calls))
 	if calls != 3 {
 		t.Fatalf("expected UID change to recompute, build ran %d times", calls)
 	}
@@ -231,8 +231,8 @@ func TestNodeClaimTemplateCacheRecomputesOnMinValuesPolicyChange(t *testing.T) {
 	ctx = WithInstanceTypeRevisions(ctx, map[string]uint64{"pool": 1})
 
 	calls := 0
-	nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, templateCacheBuild(np, its, &calls))
-	nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyBestEffort, templateCacheBuild(np, its, &calls))
+	nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, 0, templateCacheBuild(np, its, &calls))
+	nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyBestEffort, 0, templateCacheBuild(np, its, &calls))
 	if calls != 2 {
 		t.Fatalf("expected minValues policy change to recompute, build ran %d times", calls)
 	}
@@ -246,8 +246,8 @@ func TestNodeClaimTemplateCacheBypassesWithoutRevisionOrUID(t *testing.T) {
 	np := domainGroupCacheNodePool("pool", "uid-pool")
 	calls := 0
 	// no revisions on the context
-	nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, templateCacheBuild(np, its, &calls))
-	nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, templateCacheBuild(np, its, &calls))
+	nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, 0, templateCacheBuild(np, its, &calls))
+	nodeClaimTemplateWithCache(ctx, np, its, karpopts.MinValuesPolicyStrict, 0, templateCacheBuild(np, its, &calls))
 	if calls != 2 {
 		t.Fatalf("expected bypass without revisions, build ran %d times", calls)
 	}
@@ -258,7 +258,7 @@ func TestNodeClaimTemplateCacheBypassesWithoutRevisionOrUID(t *testing.T) {
 	// revision present but no UID
 	ctx = WithInstanceTypeRevisions(ctx, map[string]uint64{"pool": 1})
 	noUID := domainGroupCacheNodePool("pool", "")
-	nodeClaimTemplateWithCache(ctx, noUID, its, karpopts.MinValuesPolicyStrict, templateCacheBuild(noUID, its, &calls))
+	nodeClaimTemplateWithCache(ctx, noUID, its, karpopts.MinValuesPolicyStrict, 0, templateCacheBuild(noUID, its, &calls))
 	if len(cache.entries) != 0 {
 		t.Fatal("expected cache to remain unpopulated when the NodePool lacks a UID")
 	}
@@ -268,7 +268,7 @@ func TestNodeClaimTemplateCacheWithoutCacheMatchesDirectConstruction(t *testing.
 	np := domainGroupCacheNodePool("pool", "uid-pool")
 	its := templateCacheInstanceTypes("it-a")
 	calls := 0
-	first, ok := nodeClaimTemplateWithCache(context.Background(), np, its, karpopts.MinValuesPolicyStrict, templateCacheBuild(np, its, &calls))
+	first, ok := nodeClaimTemplateWithCache(context.Background(), np, its, karpopts.MinValuesPolicyStrict, 0, templateCacheBuild(np, its, &calls))
 	if !ok || first == nil || calls != 1 {
 		t.Fatalf("expected direct construction without a cache, ok=%v calls=%d", ok, calls)
 	}

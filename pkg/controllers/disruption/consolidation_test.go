@@ -2601,6 +2601,176 @@ var _ = Describe("Consolidation", func() {
 			Expect(ok).To(BeTrue())
 		})
 	})
+	Context("Split fallback", func() {
+		var currentInstance, mediumInstance *cloudprovider.InstanceType
+		var rs *appsv1.ReplicaSet
+
+		makePods := func(count int) []*corev1.Pod {
+			return lo.Times(count, func(_ int) *corev1.Pod {
+				return test.Pod(test.PodOptions{
+					ObjectMeta: metav1.ObjectMeta{Labels: labels,
+						OwnerReferences: []metav1.OwnerReference{
+							{
+								APIVersion:         "apps/v1",
+								Kind:               "ReplicaSet",
+								Name:               rs.Name,
+								UID:                rs.UID,
+								Controller:         new(true),
+								BlockOwnerDeletion: new(true),
+							},
+						}},
+					ResourceRequirements: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10")},
+					},
+				})
+			})
+		}
+		BeforeEach(func() {
+			// available, so the ordinary simulation packs every pod onto one replacement of the candidate's own
+			// type and finds nothing cheaper that holds them all - the case the split fallback exists for
+			currentInstance = fake.NewInstanceType("current-large",
+				fake.WithResources(corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("32"), corev1.ResourcePods: resource.MustParse("10")}),
+				fake.WithOfferings(cloudprovider.Offering{
+					Available:    true,
+					Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
+					Price:        1.0,
+				}),
+			)
+			// holds one 10-CPU pod, so dropping the large type forces one claim per pod
+			mediumInstance = fake.NewInstanceType("medium-replacement",
+				fake.WithResources(corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("12"), corev1.ResourcePods: resource.MustParse("10")}),
+				fake.WithOfferings(
+					cloudprovider.Offering{
+						Available:    true,
+						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeSpot, corev1.LabelTopologyZone: "test-zone-1a"}),
+						Price:        0.4,
+					},
+					cloudprovider.Offering{
+						Available:    true,
+						Requirements: scheduling.NewLabelRequirements(map[string]string{v1.CapacityTypeLabelKey: v1.CapacityTypeOnDemand, corev1.LabelTopologyZone: "test-zone-1a"}),
+						Price:        0.45,
+					},
+				),
+			)
+			cloudProvider.InstanceTypes = []*cloudprovider.InstanceType{currentInstance, mediumInstance}
+			ExpectSingletonReconciled(ctx, pricingController)
+
+			rs = test.ReplicaSet()
+			ExpectApplied(ctx, env.Client, rs)
+			Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(rs), rs)).To(Succeed())
+
+			nodeClaim, node = test.NodeClaimAndNode(v1.NodeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						v1.NodePoolLabelKey:            nodePool.Name,
+						corev1.LabelInstanceTypeStable: currentInstance.Name,
+						v1.CapacityTypeLabelKey:        v1.CapacityTypeOnDemand,
+						corev1.LabelTopologyZone:       "test-zone-1a",
+					},
+				},
+				Status: v1.NodeClaimStatus{
+					Allocatable: map[corev1.ResourceName]resource.Quantity{corev1.ResourceCPU: resource.MustParse("32"), corev1.ResourcePods: resource.MustParse("10")},
+				},
+			})
+			nodeClaim.StatusConditions().SetTrue(v1.ConditionTypeConsolidatable)
+		})
+		applyTwoPodNode := func() {
+			pods := makePods(2)
+			ExpectApplied(ctx, env.Client, rs, pods[0], pods[1], node, nodeClaim, nodePool)
+			ExpectManualBinding(ctx, env.Client, pods[0], node)
+			ExpectManualBinding(ctx, env.Client, pods[1], node)
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
+		}
+		It("leaves the node alone when the fallback is disabled", func() {
+			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{MaxConsolidationReplacements: lo.ToPtr(3)}))
+			applyTwoPodNode()
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			Expect(queue.GetCommands()).To(BeEmpty())
+			Expect(ExpectNodeClaims(ctx, env.Client)).To(HaveLen(1))
+			ExpectExists(ctx, env.Client, nodeClaim)
+		})
+		It("splits a node no cheaper single replacement can absorb", func() {
+			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{
+				MaxConsolidationReplacements: lo.ToPtr(3),
+				ConsolidationSplitFallback:   lo.ToPtr(true),
+			}))
+			applyTwoPodNode()
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			cmds := queue.GetCommands()
+			Expect(cmds).To(HaveLen(1))
+			Expect(cmds[0].Replacements).To(HaveLen(2))
+			ExpectMakeNewNodeClaimsReady(ctx, env.Client, env.Clock, cluster, cloudProvider, cmds[0])
+			ExpectObjectReconciled(ctx, env.Client, queue, nodeClaim)
+			ExpectNodeClaimsCascadeDeletion(ctx, env.Client, nodeClaim)
+
+			nodeClaims := ExpectNodeClaims(ctx, env.Client)
+			Expect(nodeClaims).To(HaveLen(2))
+			for _, nc := range nodeClaims {
+				Expect(nc.Name).ToNot(Equal(nodeClaim.Name))
+				// the split was priced against the cheaper spot offerings, so spot must be enforced to keep the gain
+				Expect(scheduling.NewNodeSelectorRequirementsWithMinValues(nc.Spec.Requirements...).Get(v1.CapacityTypeLabelKey).Has(v1.CapacityTypeOnDemand)).To(BeFalse())
+			}
+			ExpectNotFound(ctx, env.Client, nodeClaim, node)
+		})
+		It("will not split when the replacements don't clear the savings margin", func() {
+			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{
+				MaxConsolidationReplacements: lo.ToPtr(3),
+				ConsolidationSplitFallback:   lo.ToPtr(true),
+			}))
+			// 2 x 0.48 = 0.96 is cheaper than the 1.0 candidate but inside the default 5% margin
+			for _, o := range mediumInstance.Offerings {
+				o.Price = 0.48
+			}
+			ExpectSingletonReconciled(ctx, pricingController)
+			applyTwoPodNode()
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			Expect(queue.GetCommands()).To(BeEmpty())
+			ExpectExists(ctx, env.Client, nodeClaim)
+		})
+		It("splits the same node once the savings margin is lowered", func() {
+			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{
+				MaxConsolidationReplacements: lo.ToPtr(3),
+				ConsolidationSplitFallback:   lo.ToPtr(true),
+				ConsolidationSplitMinSavings: lo.ToPtr(0.0),
+			}))
+			for _, o := range mediumInstance.Offerings {
+				o.Price = 0.48
+			}
+			ExpectSingletonReconciled(ctx, pricingController)
+			applyTwoPodNode()
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			cmds := queue.GetCommands()
+			Expect(cmds).To(HaveLen(1))
+			Expect(cmds[0].Replacements).To(HaveLen(2))
+		})
+		It("will not split beyond MaxConsolidationReplacements", func() {
+			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{
+				MaxConsolidationReplacements: lo.ToPtr(1),
+				ConsolidationSplitFallback:   lo.ToPtr(true),
+			}))
+			applyTwoPodNode()
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			Expect(queue.GetCommands()).To(BeEmpty())
+			ExpectExists(ctx, env.Client, nodeClaim)
+		})
+		It("will not split once the pass exhausts its attempt budget", func() {
+			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{
+				MaxConsolidationReplacements:  lo.ToPtr(3),
+				ConsolidationSplitFallback:    lo.ToPtr(true),
+				ConsolidationSplitMaxAttempts: lo.ToPtr(0),
+			}))
+			applyTwoPodNode()
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			Expect(queue.GetCommands()).To(BeEmpty())
+			ExpectExists(ctx, env.Client, nodeClaim)
+		})
+	})
 	Context("Delete", func() {
 		var nodeClaims []*v1.NodeClaim
 		var nodes []*corev1.Node

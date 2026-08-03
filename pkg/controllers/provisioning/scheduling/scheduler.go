@@ -96,6 +96,7 @@ type options struct {
 	minValuesPolicy         karpopts.MinValuesPolicy
 	numConcurrentReconciles int
 	enforceConsolidateAfter bool
+	newNodeClaimPriceLimit  float64
 }
 
 type Options = option.Function[options]
@@ -122,6 +123,17 @@ var MinValuesPolicy = func(policy karpopts.MinValuesPolicy) func(*options) {
 
 var IsConsolidationSimulation = func(opts *options) {
 	opts.enforceConsolidateAfter = true
+}
+
+// NewNodeClaimPriceLimit restricts the instance types a simulation may launch new capacity from to those whose
+// cheapest available offering is below limit. Consolidation uses it to discover multi-node replacements for a
+// candidate that a single same-sized node would otherwise absorb: with the candidate's own price as the limit, the
+// instance types that can hold all of its pods on one node drop out and the scheduler packs them onto several
+// cheaper nodes instead. A non-positive limit disables the filter.
+var NewNodeClaimPriceLimit = func(limit float64) func(*options) {
+	return func(opts *options) {
+		opts.newNodeClaimPriceLimit = limit
+	}
 }
 
 func NewScheduler(
@@ -153,12 +165,16 @@ func NewScheduler(
 	}
 	// Pre-filter instance types eligible for NodePools to reduce work done during scheduling loops for pods
 	// if no templates remain, we still want to build the scheduler so that Karpenter can ack pods which can schedule to existing and in-flight capacity
+	// The price limit only applies to the new-capacity templates; existing nodes keep resolving against the full
+	// instance type list so their accounting is unaffected.
+	priceLimit := option.Resolve(opts...).newNodeClaimPriceLimit
 	templatesStart := time.Now()
 	templates := lo.FilterMap(nodePools, func(np *v1.NodePool, _ int) (*NodeClaimTemplate, bool) {
-		return nodeClaimTemplateWithCache(ctx, np, instanceTypes[np.Name], minValuesPolicy, func() *NodeClaimTemplate {
+		poolInstanceTypes := instanceTypesBelowPrice(instanceTypes[np.Name], priceLimit)
+		return nodeClaimTemplateWithCache(ctx, np, poolInstanceTypes, minValuesPolicy, priceLimit, func() *NodeClaimTemplate {
 			var err error
 			nct := NewNodeClaimTemplate(np)
-			nct.InstanceTypeOptions, _, err = filterInstanceTypesByRequirements(instanceTypes[np.Name], nct.Requirements, &corev1.Pod{}, corev1.ResourceList{}, []DaemonOverheadGroup{{InstanceTypes: instanceTypes[np.Name], HostPortUsage: scheduling.NewHostPortUsage()}}, corev1.ResourceList{}, minValuesPolicy == karpopts.MinValuesPolicyBestEffort)
+			nct.InstanceTypeOptions, _, err = filterInstanceTypesByRequirements(poolInstanceTypes, nct.Requirements, &corev1.Pod{}, corev1.ResourceList{}, []DaemonOverheadGroup{{InstanceTypes: poolInstanceTypes, HostPortUsage: scheduling.NewHostPortUsage()}}, corev1.ResourceList{}, minValuesPolicy == karpopts.MinValuesPolicyBestEffort)
 			if len(nct.InstanceTypeOptions) == 0 {
 				if instanceTypeFilterErr, ok := lo.ErrorsAs[InstanceTypeFilterError](err); ok && instanceTypeFilterErr.minValuesIncompatibleErr != nil {
 					recorder.Publish(NoCompatibleInstanceTypes(np, true))
