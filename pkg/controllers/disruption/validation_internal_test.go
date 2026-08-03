@@ -1,0 +1,134 @@
+/*
+Copyright The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package disruption
+
+import (
+	"fmt"
+	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+
+	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	"sigs.k8s.io/karpenter/pkg/cloudprovider"
+	pscheduling "sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
+	"sigs.k8s.io/karpenter/pkg/scheduling"
+)
+
+func simulatedNodeClaim(nodePool string, instanceTypes []string, requirements ...*scheduling.Requirement) *pscheduling.NodeClaim {
+	nc := &pscheduling.NodeClaim{}
+	nc.NodePoolName = nodePool
+	nc.Requirements = scheduling.NewRequirements(requirements...)
+	for _, name := range instanceTypes {
+		nc.InstanceTypeOptions = append(nc.InstanceTypeOptions, &cloudprovider.InstanceType{Name: name})
+	}
+	return nc
+}
+
+func replacementFor(nc *pscheduling.NodeClaim) *Replacement {
+	return &Replacement{NodeClaim: nc}
+}
+
+func TestReplacementsMatchSimulationInstanceTypeSubset(t *testing.T) {
+	replacement := replacementFor(simulatedNodeClaim("pool-a", []string{"m5.large"}))
+	if !replacementsMatchSimulation([]*Replacement{replacement}, []*pscheduling.NodeClaim{
+		simulatedNodeClaim("pool-a", []string{"m5.large", "m5.xlarge"}),
+	}) {
+		t.Fatal("expected subset instance types in the same nodepool to match")
+	}
+	if replacementsMatchSimulation([]*Replacement{replacement}, []*pscheduling.NodeClaim{
+		simulatedNodeClaim("pool-a", []string{"m5.xlarge"}),
+	}) {
+		t.Fatal("expected non-subset instance types to not match")
+	}
+}
+
+func TestReplacementsMatchSimulationRejectsDifferentNodePool(t *testing.T) {
+	replacement := replacementFor(simulatedNodeClaim("pool-a", []string{"m5.large"}))
+	if replacementsMatchSimulation([]*Replacement{replacement}, []*pscheduling.NodeClaim{
+		simulatedNodeClaim("pool-b", []string{"m5.large"}),
+	}) {
+		t.Fatal("expected same instance type names in a different nodepool to not match")
+	}
+}
+
+func TestReplacementsMatchSimulationRejectsConflictingRequirements(t *testing.T) {
+	zone := func(z string) *scheduling.Requirement {
+		return scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, z)
+	}
+	capacityType := func(ct string) *scheduling.Requirement {
+		return scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, ct)
+	}
+	replacement := replacementFor(simulatedNodeClaim("pool-a", []string{"m5.large"}, zone("zone-1"), capacityType(v1.CapacityTypeSpot)))
+
+	if !replacementsMatchSimulation([]*Replacement{replacement}, []*pscheduling.NodeClaim{
+		simulatedNodeClaim("pool-a", []string{"m5.large"}, zone("zone-1"), capacityType(v1.CapacityTypeSpot)),
+	}) {
+		t.Fatal("expected identical requirements to match")
+	}
+	if replacementsMatchSimulation([]*Replacement{replacement}, []*pscheduling.NodeClaim{
+		simulatedNodeClaim("pool-a", []string{"m5.large"}, zone("zone-2"), capacityType(v1.CapacityTypeSpot)),
+	}) {
+		t.Fatal("expected same instance type names with a conflicting zone requirement to not match")
+	}
+	if replacementsMatchSimulation([]*Replacement{replacement}, []*pscheduling.NodeClaim{
+		simulatedNodeClaim("pool-a", []string{"m5.large"}, zone("zone-1"), capacityType(v1.CapacityTypeOnDemand)),
+	}) {
+		t.Fatal("expected same instance type names with a conflicting capacity type requirement to not match")
+	}
+}
+
+func TestReplacementsMatchSimulationOneToOneMatching(t *testing.T) {
+	// One simulated claim can satisfy both replacements, but there is no distinct claim for the second
+	// replacement, so the matching must fail regardless of iteration order.
+	broad := simulatedNodeClaim("pool-a", []string{"m5.large", "m5.xlarge"})
+	if replacementsMatchSimulation(
+		[]*Replacement{
+			replacementFor(simulatedNodeClaim("pool-a", []string{"m5.large"})),
+			replacementFor(simulatedNodeClaim("pool-a", []string{"m5.xlarge"})),
+		},
+		[]*pscheduling.NodeClaim{broad, simulatedNodeClaim("pool-b", []string{"m5.large"})},
+	) {
+		t.Fatal("expected matching to fail when two replacements compete for one compatible simulated claim")
+	}
+	// With two compatible claims the augmenting-path matching must reassign and succeed.
+	if !replacementsMatchSimulation(
+		[]*Replacement{
+			replacementFor(simulatedNodeClaim("pool-a", []string{"m5.large", "m5.xlarge"})),
+			replacementFor(simulatedNodeClaim("pool-a", []string{"m5.large"})),
+		},
+		[]*pscheduling.NodeClaim{broad, simulatedNodeClaim("pool-a", []string{"m5.large"})},
+	) {
+		t.Fatal("expected augmenting-path matching to find a valid one-to-one assignment")
+	}
+}
+
+func TestReplacementsMatchSimulationLargeAdversarialInput(t *testing.T) {
+	// A failing match over many near-identical claims must complete quickly (polynomial, not factorial).
+	const n = 50
+	var replacements []*Replacement
+	var claims []*pscheduling.NodeClaim
+	for i := 0; i < n; i++ {
+		replacements = append(replacements, replacementFor(simulatedNodeClaim("pool-a", []string{"m5.large"})))
+		claims = append(claims, simulatedNodeClaim("pool-a", []string{"m5.large"}))
+	}
+	// Make one replacement unsatisfiable so the overall match fails after exploring alternatives.
+	replacements = append(replacements, replacementFor(simulatedNodeClaim("pool-a", []string{fmt.Sprintf("missing-%d", n)})))
+	claims = append(claims, simulatedNodeClaim("pool-a", []string{"m5.large"}))
+	if replacementsMatchSimulation(replacements, claims) {
+		t.Fatal("expected matching to fail when one replacement has no compatible simulated claim")
+	}
+}

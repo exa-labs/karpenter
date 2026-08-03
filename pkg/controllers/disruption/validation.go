@@ -355,29 +355,53 @@ func (v *validation) validateCommand(ctx context.Context, cmd Command, candidate
 }
 
 // replacementsMatchSimulation reports whether there is a one-to-one matching between the command's replacements and
-// the simulated NodeClaims such that each replacement's instance type options are a subset of its matched simulated
-// NodeClaim's options. Replacement counts are small (bounded by MAX_CONSOLIDATION_REPLACEMENTS), so a backtracking
-// search over the possible assignments is cheap.
+// the simulated NodeClaims such that each replacement could still satisfy its matched simulated NodeClaim: same
+// NodePool, non-conflicting scheduling requirements, and instance type options that are a subset of the simulated
+// NodeClaim's options. Uses Kuhn's augmenting-path maximum bipartite matching, which is polynomial in the number of
+// replacements, so it stays cheap even for large MAX_CONSOLIDATION_REPLACEMENTS values.
 func replacementsMatchSimulation(replacements []*Replacement, newNodeClaims []*scheduling.NodeClaim) bool {
-	used := make([]bool, len(newNodeClaims))
-	var match func(i int) bool
-	match = func(i int) bool {
-		if i == len(replacements) {
-			return true
+	canSatisfy := make([][]bool, len(replacements))
+	for i, r := range replacements {
+		canSatisfy[i] = make([]bool, len(newNodeClaims))
+		for j, nc := range newNodeClaims {
+			canSatisfy[i][j] = replacementMatchesSimulatedNodeClaim(r, nc)
 		}
+	}
+	matchedTo := lo.Map(newNodeClaims, func(_ *scheduling.NodeClaim, _ int) int { return -1 })
+	var augment func(i int, visited []bool) bool
+	augment = func(i int, visited []bool) bool {
 		for j := range newNodeClaims {
-			if used[j] || !instanceTypesAreSubset(replacements[i].InstanceTypeOptions, newNodeClaims[j].InstanceTypeOptions) {
+			if !canSatisfy[i][j] || visited[j] {
 				continue
 			}
-			used[j] = true
-			if match(i + 1) {
+			visited[j] = true
+			if matchedTo[j] == -1 || augment(matchedTo[j], visited) {
+				matchedTo[j] = i
 				return true
 			}
-			used[j] = false
 		}
 		return false
 	}
-	return match(0)
+	for i := range replacements {
+		if !augment(i, make([]bool, len(newNodeClaims))) {
+			return false
+		}
+	}
+	return true
+}
+
+// replacementMatchesSimulatedNodeClaim reports whether a command's replacement is still a valid stand-in for a
+// simulated NodeClaim. Instance type names alone are not enough: the same instance type can be reachable through
+// different NodePools or scheduling constraints (zone, capacity type, taints), so we also require the same NodePool
+// and non-conflicting scheduling requirements.
+func replacementMatchesSimulatedNodeClaim(replacement *Replacement, newNodeClaim *scheduling.NodeClaim) bool {
+	if replacement.NodePoolName != newNodeClaim.NodePoolName {
+		return false
+	}
+	if err := newNodeClaim.Requirements.Intersects(replacement.Requirements); err != nil {
+		return false
+	}
+	return instanceTypesAreSubset(replacement.InstanceTypeOptions, newNodeClaim.InstanceTypeOptions)
 }
 
 // getValidationFailureReason categorizes validation errors into specific failure types
