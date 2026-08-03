@@ -72,7 +72,7 @@ func TestObserveExecutedConsolidationCommandRecordsReplacementCount(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !hasMetric(families, "karpenter_voluntary_disruption_consolidation_executed_commands_total", map[string]string{
+			if !hasMetric(families, "karpenter_voluntary_disruption_consolidation_executed_nodes_total", map[string]string{
 				"consolidation_type": "executed-unit",
 				"nodepool":           "executed-pool",
 				"decision":           tc.decision,
@@ -99,7 +99,7 @@ func TestObserveExecutedConsolidationCommandRecordsEveryCandidate(t *testing.T) 
 		t.Fatal(err)
 	}
 	for _, pool := range []string{"pool-a", "pool-b"} {
-		if !hasMetric(families, "karpenter_voluntary_disruption_consolidation_executed_commands_total", map[string]string{
+		if !hasMetric(families, "karpenter_voluntary_disruption_consolidation_executed_nodes_total", map[string]string{
 			"consolidation_type": "executed-multi",
 			"nodepool":           pool,
 			"decision":           "replace",
@@ -119,7 +119,7 @@ func TestObserveExecutedConsolidationCommandIgnoresCommandWithoutMethod(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hasMetric(families, "karpenter_voluntary_disruption_consolidation_executed_commands_total", map[string]string{
+	if hasMetric(families, "karpenter_voluntary_disruption_consolidation_executed_nodes_total", map[string]string{
 		"nodepool": "methodless-pool",
 	}) {
 		t.Fatal("a command without a method should not record an executed-command series")

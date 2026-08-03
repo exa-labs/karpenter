@@ -288,13 +288,13 @@ var (
 		},
 		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel},
 	)
-	ConsolidationExecutedCommandsTotal = opmetrics.NewPrometheusCounter(
+	ConsolidationExecutedNodesTotal = opmetrics.NewPrometheusCounter(
 		crmetrics.Registry,
 		prometheus.CounterOpts{
 			Namespace: metrics.Namespace,
 			Subsystem: voluntaryDisruptionSubsystem,
-			Name:      "consolidation_executed_commands_total",
-			Help:      "Number of successfully executed consolidation commands by type, NodePool, decision, and the number of replacement NodeClaims launched. Compare against consolidation_replacement_attempts_total to see how many simulated multi-replacement options actually execute.",
+			Name:      "consolidation_executed_nodes_total",
+			Help:      "Number of nodes disrupted by consolidation commands that executed successfully, by type, NodePool, decision, and the number of replacement NodeClaims the command launched. Counted per disrupted node rather than per command so a multi-node command attributes to each candidate's own NodePool. Compare against consolidation_replacement_attempts_total to see how many simulated multi-replacement options actually execute.",
 		},
 		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel, decisionLabel, replacementCountLabel},
 	)
@@ -467,15 +467,16 @@ func executedReplacementCountBucket(replacementCount int) string {
 }
 
 // ObserveExecutedConsolidationCommand records a command that finished
-// successfully, one observation per disrupted candidate so the counter reads in
-// nodes rather than commands.
+// successfully as one observation per node it disrupted, so a multi-node
+// command attributes to each candidate's own NodePool instead of having to pick
+// one. The counter is named for that unit: consolidation_executed_nodes_total.
 func ObserveExecutedConsolidationCommand(cmd Command) {
 	if cmd.Method == nil {
 		return
 	}
 	bucket := executedReplacementCountBucket(len(cmd.Replacements))
 	for _, candidate := range cmd.Candidates {
-		ConsolidationExecutedCommandsTotal.Inc(map[string]string{
+		ConsolidationExecutedNodesTotal.Inc(map[string]string{
 			ConsolidationTypeLabel: cmd.ConsolidationType(),
 			metrics.NodePoolLabel:  candidate.NodePool.Name,
 			decisionLabel:          string(cmd.Decision()),
