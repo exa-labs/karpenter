@@ -123,11 +123,11 @@ func TestReplacementsMatchSimulationIgnoresReservationIDs(t *testing.T) {
 	// each simulation run reserves whichever reserved offerings are available at that moment, so the
 	// reservation ID requirement can legitimately differ between the command and the fresh simulation
 	replacement := replacementFor(simulatedNodeClaim("pool-a", []string{"m5.large"},
-		capacityType(v1.CapacityTypeReserved),
+		scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, v1.CapacityTypeReserved),
 		scheduling.NewRequirement(cloudprovider.ReservationIDLabel, corev1.NodeSelectorOpIn, "res-1")))
 	if !replacementsMatchSimulation([]*Replacement{replacement}, []*pscheduling.NodeClaim{
 		simulatedNodeClaim("pool-a", []string{"m5.large"},
-			capacityType(v1.CapacityTypeReserved),
+			scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, v1.CapacityTypeReserved),
 			scheduling.NewRequirement(cloudprovider.ReservationIDLabel, corev1.NodeSelectorOpIn, "res-2")),
 	}) {
 		t.Fatal("expected differing reservation IDs between simulation runs to still match")
