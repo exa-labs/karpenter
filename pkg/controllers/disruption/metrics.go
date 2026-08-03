@@ -282,7 +282,7 @@ var (
 			Namespace: metrics.Namespace,
 			Subsystem: voluntaryDisruptionSubsystem,
 			Name:      "consolidation_required_replacements",
-			Help:      "Number of replacement NodeClaims required by a single-node consolidation simulation that cannot be represented as one replacement.",
+			Help:      "Number of replacement NodeClaims required by single-node consolidation simulations needing more than one replacement, whether or not the count is within the configured maximum. Compare against candidate skips with reason multiple_replacements to see how many were blocked by the limit.",
 			Buckets:   []float64{2, 3, 4, 5, 8, 10, 20, 50, 100},
 		},
 		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel},
