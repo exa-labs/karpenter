@@ -103,6 +103,16 @@ func TestReplacementsMatchSimulationRejectsConflictingRequirements(t *testing.T)
 	}) {
 		t.Fatal("expected same instance type names with a conflicting capacity type requirement to not match")
 	}
+	// DoesNotExist is a distinct selector state: an old replacement requiring a label to be absent cannot
+	// satisfy a fresh claim that now requires the label to be present.
+	absent := replacementFor(simulatedNodeClaim("pool-a", []string{"m5.large"},
+		scheduling.NewRequirement("team", corev1.NodeSelectorOpDoesNotExist)))
+	if replacementsMatchSimulation([]*Replacement{absent}, []*pscheduling.NodeClaim{
+		simulatedNodeClaim("pool-a", []string{"m5.large"},
+			scheduling.NewRequirement("team", corev1.NodeSelectorOpIn, "blue")),
+	}) {
+		t.Fatal("expected a DoesNotExist replacement requirement to not satisfy a fresh In requirement")
+	}
 }
 
 func TestReplacementsMatchSimulationRejectsDifferentNodePoolUID(t *testing.T) {
@@ -112,6 +122,21 @@ func TestReplacementsMatchSimulationRejectsDifferentNodePoolUID(t *testing.T) {
 	recreated.NodePoolUUID = "uid-new"
 	if replacementsMatchSimulation([]*Replacement{replacementFor(replacement)}, []*pscheduling.NodeClaim{recreated}) {
 		t.Fatal("expected a same-name NodePool with a different UID (deleted and recreated) to not match")
+	}
+}
+
+func TestReplacementsMatchSimulationRejectsDifferentNodePoolHash(t *testing.T) {
+	replacement := simulatedNodeClaim("pool-a", []string{"m5.large"})
+	replacement.Annotations = map[string]string{v1.NodePoolHashAnnotationKey: "hash-old", v1.NodePoolHashVersionAnnotationKey: v1.NodePoolHashVersion}
+	edited := simulatedNodeClaim("pool-a", []string{"m5.large"})
+	edited.Annotations = map[string]string{v1.NodePoolHashAnnotationKey: "hash-new", v1.NodePoolHashVersionAnnotationKey: v1.NodePoolHashVersion}
+	if replacementsMatchSimulation([]*Replacement{replacementFor(replacement)}, []*pscheduling.NodeClaim{edited}) {
+		t.Fatal("expected a same-UID NodePool with an edited template (different hash annotation) to not match")
+	}
+	same := simulatedNodeClaim("pool-a", []string{"m5.large"})
+	same.Annotations = map[string]string{v1.NodePoolHashAnnotationKey: "hash-old", v1.NodePoolHashVersionAnnotationKey: v1.NodePoolHashVersion}
+	if !replacementsMatchSimulation([]*Replacement{replacementFor(replacement)}, []*pscheduling.NodeClaim{same}) {
+		t.Fatal("expected identical hash annotations to match")
 	}
 }
 

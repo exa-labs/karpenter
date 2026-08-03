@@ -257,6 +257,12 @@ func (r *Requirement) HasIntersection(requirement *Requirement) bool {
 // SubsetOf reports whether every value allowed by r is also allowed by requirement, i.e. any node satisfying r is
 // guaranteed to satisfy requirement.
 func (r *Requirement) SubsetOf(requirement *Requirement) bool {
+	// DoesNotExist is a distinct selector state (the label must be absent), not an empty allowed-value set:
+	// a node without the label satisfies DoesNotExist but no other operator, so it is only contained in
+	// another DoesNotExist.
+	if r.Operator() == corev1.NodeSelectorOpDoesNotExist {
+		return requirement.Operator() == corev1.NodeSelectorOpDoesNotExist
+	}
 	if !r.complement {
 		// r allows a finite set of values; each must be allowed by requirement (including its bounds).
 		for v := range r.values {

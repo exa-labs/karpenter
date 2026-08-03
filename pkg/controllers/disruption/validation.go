@@ -403,6 +403,12 @@ func replacementMatchesSimulatedNodeClaim(replacement *Replacement, newNodeClaim
 	if replacement.NodePoolName != newNodeClaim.NodePoolName || replacement.NodePoolUUID != newNodeClaim.NodePoolUUID {
 		return false
 	}
+	// compare the NodePool hash annotations too: an in-place NodePool template edit (e.g. NodeClassRef or
+	// startup taints) keeps the same UID but changes the hash, and the stale template must not be launched
+	if replacement.Annotations[v1.NodePoolHashAnnotationKey] != newNodeClaim.Annotations[v1.NodePoolHashAnnotationKey] ||
+		replacement.Annotations[v1.NodePoolHashVersionAnnotationKey] != newNodeClaim.Annotations[v1.NodePoolHashVersionAnnotationKey] {
+		return false
+	}
 	if !taintsAreEqual(replacement.Spec.Taints, newNodeClaim.Spec.Taints) {
 		return false
 	}

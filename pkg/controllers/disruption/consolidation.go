@@ -216,14 +216,17 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 	if len(candidates) == 1 {
 		maxReplacements = options.FromContext(ctx).MaxConsolidationReplacements
 	}
+	// record the required replacement count for every single-candidate simulation needing more than one
+	// replacement, whether or not it is within the configured limit
+	if len(candidates) == 1 && len(results.NewNodeClaims) > 1 {
+		ConsolidationRequiredReplacements.Observe(float64(len(results.NewNodeClaims)), map[string]string{
+			ConsolidationTypeLabel: consolidationType,
+			metrics.NodePoolLabel:  candidates[0].NodePool.Name,
+		})
+	}
 	if len(results.NewNodeClaims) > maxReplacements {
 		if len(candidates) == 1 {
-			nodePool := candidates[0].NodePool.Name
-			ObserveConsolidationCandidateSkip(consolidationType, nodePool, CandidateSkipMultipleReplacements)
-			ConsolidationRequiredReplacements.Observe(float64(len(results.NewNodeClaims)), map[string]string{
-				ConsolidationTypeLabel: consolidationType,
-				metrics.NodePoolLabel:  nodePool,
-			})
+			ObserveConsolidationCandidateSkip(consolidationType, candidates[0].NodePool.Name, CandidateSkipMultipleReplacements)
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Can't remove without creating %d candidates", len(results.NewNodeClaims)))...)
 		}
 		return Command{}, nil
