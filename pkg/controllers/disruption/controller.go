@@ -197,7 +197,7 @@ func (c *Controller) disrupt(ctx context.Context, disruption Method) (bool, erro
 	EligibleNodes.Set(float64(len(candidates)), map[string]string{
 		metrics.ReasonLabel: strings.ToLower(string(disruption.Reason())),
 	})
-	ObserveEligibleNodesByNodePool(candidates, fmt.Sprintf("%T", disruption), disruption.ConsolidationType(), strings.ToLower(string(disruption.Reason())))
+	ObserveCandidateNodesByNodePool(candidates, fmt.Sprintf("%T", disruption), disruption.ConsolidationType(), strings.ToLower(string(disruption.Reason())))
 
 	// If there are no candidates, move to the next disruption
 	if len(candidates) == 0 {

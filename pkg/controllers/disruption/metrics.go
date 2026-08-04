@@ -60,16 +60,15 @@ const (
 	capacityTypeTransitionLabel  = "capacity_type_transition"
 )
 
+// Pass outcomes partition every pass exactly once: it either acted, ran out of time, or found
+// nothing. Budget saturation is deliberately not an outcome here. Budgets are per NodePool while a
+// pass is fleet-wide, so one pool's exhausted allowance would label a pass that walked hundreds of
+// candidates across every other pool; the CandidateSkipBudgetExhausted reason below carries the
+// same fact with the NodePool attached.
 const (
 	PassOutcomeCompleted = "completed"
 	PassOutcomeTimedOut  = "timed_out"
-	// PassOutcomeBudgetConstrained overlays no_op: the pass produced no command and at least one
-	// candidate was skipped for budget. It is an attribution, not a measurement, and a coarse one,
-	// since the outcome carries no NodePool label while budgets are per NodePool and a pass that
-	// skipped one candidate for budget may have skipped hundreds for price. Count
-	// consolidation_candidate_skips_total by NodePool to size the effect.
-	PassOutcomeBudgetConstrained = "budget_constrained"
-	PassOutcomeNoOp              = "no_op"
+	PassOutcomeNoOp      = "no_op"
 	// CandidateSkipBudgetExhausted marks a single-node candidate whose NodePool
 	// has zero disruptions currently allowed by its budget.
 	CandidateSkipBudgetExhausted = "budget_exhausted"
@@ -79,11 +78,37 @@ const (
 	// bookkeeping, not active-disruption saturation.
 	CandidateSkipSimBatchOverBudgetAllowance = "sim_batch_over_budget_allowance"
 	CandidateSkipThreshold                   = "cannot_pass_threshold"
-	CandidateSkipNoOp                        = "noop_decision"
-	CandidateSkipComputeError                = "compute_error"
-	CandidateSkipPodsDidNotSchedule          = "pods_did_not_schedule"
-	CandidateSkipMultipleReplacements        = "multiple_replacements_required"
-	CandidateSkipApprovalRejected            = "approval_rejected"
+	// The simulation ran and produced a plan that was not worth executing. Which of these fires
+	// says what would have to change for the candidate to become actionable, so they are separate
+	// reasons rather than one noop_decision bucket: a fleet whose skips are
+	// no_cheaper_replacement_set is waiting on cheaper offerings, while one whose skips are
+	// no_cheaper_single_replacement is waiting on a search that considers several smaller nodes.
+	//
+	// CandidateSkipNoCheaperSingleReplacement is that second case: exactly one replacement was
+	// needed (one node of the candidate's shape fits all its pods) and nothing of that shape is
+	// cheaper. It is the population the split fallback exists to serve.
+	CandidateSkipNoCheaperSingleReplacement = "no_cheaper_single_replacement"
+	// CandidateSkipNoCheaperReplacementSet is the same verdict for a multi-node replacement plan:
+	// no combination of the required replacements beats the candidates' price.
+	CandidateSkipNoCheaperReplacementSet = "no_cheaper_replacement_set"
+	// CandidateSkipReplacementFlexibility means cheaper capacity does exist but the surviving
+	// options could not satisfy the NodePool's minValues requirements.
+	CandidateSkipReplacementFlexibility = "replacement_flexibility"
+	// CandidateSkipPriceFilterError means the price filter itself failed.
+	CandidateSkipPriceFilterError = "price_filter_error"
+	// CandidateSkipSpotToSpotDisabled means the candidate and its replacement are both spot and the
+	// SpotToSpotConsolidation feature gate is off, so price was never consulted.
+	CandidateSkipSpotToSpotDisabled = "spot_to_spot_disabled"
+	// CandidateSkipSpotToSpotFlexibility means a cheaper spot replacement exists but fewer than
+	// MinInstanceTypesForSpotToSpotConsolidation cheaper instance types remain, which upstream
+	// requires to avoid consolidating the same node repeatedly.
+	CandidateSkipSpotToSpotFlexibility = "spot_to_spot_flexibility"
+	// CandidateSkipNoOp remains for a no-op the branches above do not explain.
+	CandidateSkipNoOp                 = "noop_decision"
+	CandidateSkipComputeError         = "compute_error"
+	CandidateSkipPodsDidNotSchedule   = "pods_did_not_schedule"
+	CandidateSkipMultipleReplacements = "multiple_replacements_required"
+	CandidateSkipApprovalRejected     = "approval_rejected"
 )
 
 const (
@@ -137,7 +162,7 @@ var (
 	)
 	// EligibleNodes counts candidates, not nodes worth disrupting: it is set from
 	// len(GetCandidates(...)), so a node is counted once it is constructible and unblocked
-	// (not queued, no PDB or do-not-disrupt violation, labelled with instance type, capacity
+	// (not queued, no PDB or do-not-disrupt violation, labeled with instance type, capacity
 	// type and zone, consolidation enabled on its NodePool). Nothing here compares price, so a
 	// node with no cheaper alternative in the fleet is still "eligible". The upstream name is
 	// kept as-is to stay rebaseable; consolidation_actionable_candidates below is the gauge that
@@ -402,13 +427,16 @@ var (
 		},
 		[]string{metrics.NodePoolLabel, decisionLabel, capacityTypeTransitionLabel},
 	)
-	EligibleNodesByNodePool = opmetrics.NewPrometheusGauge(
+	// This gauge measures the same population as upstream's eligible_nodes, one rung below
+	// actionable: constructible and unblocked, with no price consulted. Being ours to name, it says
+	// candidate rather than inheriting a word that reads as a verdict.
+	CandidateNodesByNodePool = opmetrics.NewPrometheusGauge(
 		crmetrics.Registry,
 		prometheus.GaugeOpts{
 			Namespace: metrics.Namespace,
 			Subsystem: voluntaryDisruptionSubsystem,
-			Name:      "eligible_nodes_by_nodepool",
-			Help:      "Number of nodes eligible for disruption by NodePool, disruption reason, and consolidation type.",
+			Name:      "candidate_nodes_by_nodepool",
+			Help:      "Number of nodes that are candidates for disruption by NodePool, disruption reason, and consolidation type. A candidate is constructible and unblocked for the method; nothing here compares price, so read consolidation_actionable_candidates for the population that has a cheaper alternative.",
 		},
 		[]string{metrics.NodePoolLabel, metrics.ReasonLabel, ConsolidationTypeLabel},
 	)
@@ -425,11 +453,11 @@ var (
 )
 
 var (
-	eligibleNodePoolsMu sync.Mutex
-	eligibleNodePools   = map[string]eligibleNodePoolSeries{}
+	candidateNodePoolsMu sync.Mutex
+	candidateNodePools   = map[string]candidateNodePoolSeries{}
 )
 
-type eligibleNodePoolSeries struct {
+type candidateNodePoolSeries struct {
 	labels map[string]string
 	scope  string
 	count  int
@@ -467,16 +495,16 @@ func startPassStage(ctx context.Context, stage string) func() {
 	}
 }
 
-// ObserveEligibleNodesByNodePool records the number of eligible candidates per NodePool for a single disruption
+// ObserveCandidateNodesByNodePool records the number of candidates per NodePool for a single disruption
 // method's pass. method distinguishes passes that share the same reason and consolidation type labels (e.g.
 // StaticDrift and Drift both report reason=drifted): each method owns its own set of series, so one method's pass
 // never deletes or overwrites another's. Methods sharing labels must observe disjoint NodePool sets.
-func ObserveEligibleNodesByNodePool(candidates []*Candidate, method, consolidationType, reason string) {
+func ObserveCandidateNodesByNodePool(candidates []*Candidate, method, consolidationType, reason string) {
 	scope := method + "\x00" + labelKeyWithout(map[string]string{
 		metrics.ReasonLabel:    reason,
 		ConsolidationTypeLabel: consolidationType,
 	}, metrics.NodePoolLabel)
-	current := map[string]eligibleNodePoolSeries{}
+	current := map[string]candidateNodePoolSeries{}
 	for _, candidate := range candidates {
 		labels := map[string]string{
 			metrics.NodePoolLabel:  candidate.NodePool.Name,
@@ -491,20 +519,20 @@ func ObserveEligibleNodesByNodePool(candidates []*Candidate, method, consolidati
 		current[key] = series
 	}
 
-	eligibleNodePoolsMu.Lock()
-	defer eligibleNodePoolsMu.Unlock()
-	for key, series := range eligibleNodePools {
+	candidateNodePoolsMu.Lock()
+	defer candidateNodePoolsMu.Unlock()
+	for key, series := range candidateNodePools {
 		if series.scope == scope {
 			if _, ok := current[key]; ok {
 				continue
 			}
-			EligibleNodesByNodePool.Delete(series.labels)
-			delete(eligibleNodePools, key)
+			CandidateNodesByNodePool.Delete(series.labels)
+			delete(candidateNodePools, key)
 		}
 	}
 	for key, series := range current {
-		EligibleNodesByNodePool.Set(float64(series.count), series.labels)
-		eligibleNodePools[key] = series
+		CandidateNodesByNodePool.Set(float64(series.count), series.labels)
+		candidateNodePools[key] = series
 	}
 }
 

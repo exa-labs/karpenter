@@ -152,9 +152,6 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 
 	s.PreviouslyUnseenNodePools = unseenNodePools
 
-	if constrainedByBudgets {
-		outcome = PassOutcomeBudgetConstrained
-	}
 	return []Command{}, nil
 }
 

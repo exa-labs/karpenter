@@ -122,8 +122,6 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 		// the next time we try to disrupt.
 		if !constrainedByBudgets {
 			m.markConsolidated()
-		} else {
-			outcome = PassOutcomeBudgetConstrained
 		}
 		return []Command{}, nil
 	}
