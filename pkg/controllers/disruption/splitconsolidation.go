@@ -88,9 +88,14 @@ func (c *consolidation) trySplitConsolidation(ctx context.Context, simOpts conso
 	if !ok {
 		return Command{}, false
 	}
+	// No budget on the context means this simulation is not part of a budgeted pass at all, which is
+	// a different condition from a pass that spent its cap and must not be reported as one.
 	budget := SplitAttemptBudgetFromContext(ctx)
-	if budget == nil || !budget.TryAcquire() {
-		ObserveConsolidationSplitAttempt(candidate.NodePool.Name, SplitOutcomeAttemptCapExhausted)
+	if budget == nil {
+		return Command{}, false
+	}
+	if !budget.TryAcquire() {
+		ObserveConsolidationSplitAttempt(ctx, candidate.NodePool.Name, SplitOutcomeAttemptCapExhausted)
 		return Command{}, false
 	}
 
@@ -100,17 +105,17 @@ func (c *consolidation) trySplitConsolidation(ctx context.Context, simOpts conso
 		minSavings:            opts.ConsolidationSplitMinSavings,
 		silent:                true,
 	}, candidate)
-	ObserveConsolidationSplitDuration(candidate.NodePool.Name, time.Since(start))
+	ObserveConsolidationSplitDuration(ctx, candidate.NodePool.Name, time.Since(start))
 
 	switch {
 	case err != nil:
-		ObserveConsolidationSplitAttempt(candidate.NodePool.Name, SplitOutcomeError)
+		ObserveConsolidationSplitAttempt(ctx, candidate.NodePool.Name, SplitOutcomeError)
 		return Command{}, false
 	case cmd.Decision() != ReplaceDecision:
-		ObserveConsolidationSplitAttempt(candidate.NodePool.Name, SplitOutcomeNoOp)
+		ObserveConsolidationSplitAttempt(ctx, candidate.NodePool.Name, SplitOutcomeNoOp)
 		return Command{}, false
 	default:
-		ObserveConsolidationSplitAttempt(candidate.NodePool.Name, SplitOutcomeCommand)
+		ObserveConsolidationSplitAttempt(ctx, candidate.NodePool.Name, SplitOutcomeCommand)
 		return cmd, true
 	}
 }

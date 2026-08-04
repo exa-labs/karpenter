@@ -19,15 +19,19 @@ package disruption_test
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/controllers/disruption"
+	"sigs.k8s.io/karpenter/pkg/operator/options"
 	"sigs.k8s.io/karpenter/pkg/test"
 	. "sigs.k8s.io/karpenter/pkg/test/expectations"
 )
+
+const splitAttemptsMetric = "karpenter_voluntary_disruption_consolidation_split_attempts_total"
 
 var _ = Describe("Census", func() {
 	var censusController *disruption.CensusController
@@ -138,5 +142,60 @@ var _ = Describe("Census", func() {
 
 		ExpectMetricGaugeValue(disruption.ConsolidationCensusCandidatesEvaluated, 2, nil)
 		Expect(queue.GetCommands()).To(HaveLen(0))
+	})
+
+	It("does not report its split retries as a pass that ran out of attempts", func() {
+		// the sweep runs outside the real pass, so its retries are its own: reporting them against the
+		// pass's attempt cap would drown the fallback's telemetry in read-only survey nodes
+		ctx = options.ToContext(ctx, test.Options(test.OptionsFields{
+			MaxConsolidationReplacements: lo.ToPtr(3),
+			ConsolidationSplitFallback:   lo.ToPtr(true),
+		}))
+		rs := test.ReplicaSet()
+		ExpectApplied(ctx, env.Client, rs)
+		podOptions := test.PodOptions{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{"app": "census-test"},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion:         "apps/v1",
+						Kind:               "ReplicaSet",
+						Name:               rs.Name,
+						UID:                rs.UID,
+						Controller:         new(true),
+						BlockOwnerDeletion: new(true),
+					},
+				},
+			},
+			ResourceRequirements: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("15")},
+			}}
+		// two pods on the first node keep it eligible for a split retry, and neither node's pods fit
+		// on the other, so both candidates reach the fallback as ordinary no-ops
+		pods := test.Pods(2, podOptions)
+		bigPod := test.Pod(test.PodOptions{
+			ObjectMeta: podOptions.ObjectMeta,
+			ResourceRequirements: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("30")},
+			}})
+		ExpectApplied(ctx, env.Client, rs, pods[0], pods[1], bigPod, nodeClaims[0], nodes[0], nodeClaims[1], nodes[1], nodePool)
+
+		ExpectManualBinding(ctx, env.Client, pods[0], nodes[0])
+		ExpectManualBinding(ctx, env.Client, pods[1], nodes[0])
+		ExpectManualBinding(ctx, env.Client, bigPod, nodes[1])
+
+		ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{nodes[0], nodes[1]}, []*v1.NodeClaim{nodeClaims[0], nodeClaims[1]})
+		ExpectSingletonReconciled(ctx, censusController)
+
+		_, found := FindMetricWithLabelValues(splitAttemptsMetric, map[string]string{
+			"outcome": disruption.SplitOutcomeAttemptCapExhausted,
+		})
+		Expect(found).To(BeFalse())
+		// the sweep retries under its own budget, and what it records stays on its own consolidation type
+		_, found = FindMetricWithLabelValues(splitAttemptsMetric, map[string]string{
+			"consolidation_type": disruption.CensusConsolidationType,
+			"nodepool":           nodePool.Name,
+		})
+		Expect(found).To(BeTrue())
 	})
 })

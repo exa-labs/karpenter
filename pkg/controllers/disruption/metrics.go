@@ -348,9 +348,9 @@ var (
 			Namespace: metrics.Namespace,
 			Subsystem: voluntaryDisruptionSubsystem,
 			Name:      "consolidation_split_attempts_total",
-			Help:      "Number of split fallback simulations by NodePool and outcome, where a single-node candidate that no cheaper single replacement could absorb is re-simulated with its own price as a ceiling on new capacity. attempt_cap_exhausted counts candidates the fallback declined to retry because the pass already spent its attempt budget.",
+			Help:      "Number of split fallback simulations by consolidation type, NodePool, and outcome, where a single-node candidate that no cheaper single replacement could absorb is re-simulated with its own price as a ceiling on new capacity. attempt_cap_exhausted counts candidates the fallback declined to retry because the pass already spent its attempt budget.",
 		},
-		[]string{metrics.NodePoolLabel, outcomeLabel},
+		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel, outcomeLabel},
 	)
 	ConsolidationSplitSecondsTotal = opmetrics.NewPrometheusCounter(
 		crmetrics.Registry,
@@ -358,9 +358,9 @@ var (
 			Namespace: metrics.Namespace,
 			Subsystem: voluntaryDisruptionSubsystem,
 			Name:      "consolidation_split_seconds_total",
-			Help:      "Cumulative wall-clock seconds spent in split fallback simulations. This time is also counted by the pass stage counters it runs inside, so it measures how much of a pass's timeout the fallback consumes at the expense of candidate traversal depth.",
+			Help:      "Cumulative wall-clock seconds spent in split fallback simulations, by consolidation type and NodePool. This time is also counted by the pass stage counters it runs inside, so it measures how much of a pass's timeout the fallback consumes at the expense of candidate traversal depth.",
 		},
-		[]string{metrics.NodePoolLabel},
+		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel},
 	)
 	ConsolidationRealizedSavingsDollarsPerHourTotal = opmetrics.NewPrometheusCounter(
 		crmetrics.Registry,
@@ -519,17 +519,19 @@ func ObserveConsolidationCandidateSkip(consolidationType, nodePool, reason strin
 
 // ObserveConsolidationSplitAttempt records the outcome of one split fallback attempt, or of a
 // candidate the fallback declined because the pass exhausted its attempt budget.
-func ObserveConsolidationSplitAttempt(nodePool, outcome string) {
+func ObserveConsolidationSplitAttempt(ctx context.Context, nodePool, outcome string) {
 	ConsolidationSplitAttemptsTotal.Inc(map[string]string{
-		metrics.NodePoolLabel: nodePool,
-		outcomeLabel:          outcome,
+		ConsolidationTypeLabel: consolidationTypeFromContext(ctx),
+		metrics.NodePoolLabel:  nodePool,
+		outcomeLabel:           outcome,
 	})
 }
 
 // ObserveConsolidationSplitDuration accumulates the wall-clock time a split fallback simulation took.
-func ObserveConsolidationSplitDuration(nodePool string, duration time.Duration) {
+func ObserveConsolidationSplitDuration(ctx context.Context, nodePool string, duration time.Duration) {
 	ConsolidationSplitSecondsTotal.Add(duration.Seconds(), map[string]string{
-		metrics.NodePoolLabel: nodePool,
+		ConsolidationTypeLabel: consolidationTypeFromContext(ctx),
+		metrics.NodePoolLabel:  nodePool,
 	})
 }
 
