@@ -98,7 +98,29 @@ func TestDaemonOverheadGroupCacheBypassesWithoutFingerprint(t *testing.T) {
 	if &first[0] == &second[0] {
 		t.Fatalf("expected bypass to recompute groups when the template has no fingerprint")
 	}
-	if len(cache.overheadGroupsByPool) != 0 {
+	if len(cache.overheadGroupsByTemplate) != 0 {
 		t.Fatalf("expected nothing cached on bypass")
+	}
+}
+
+// Split retries interleave a NodePool's price-limited templates with its unlimited one, and those have different
+// fingerprints. Both must stay cached or every candidate rebuilds the overhead groups this cache exists to reuse.
+func TestDaemonOverheadGroupCacheKeepsInterleavedFingerprints(t *testing.T) {
+	ctx := operatoroptions.ToContext(context.Background(), &operatoroptions.Options{})
+	cache := NewDaemonOverheadCache()
+	cache.updateDaemonSetGeneration(nil)
+	unlimited := overheadGroupTestTemplate(1, true)
+	limited := overheadGroupTestTemplate(2, true)
+
+	firstUnlimited := buildDaemonOverheadGroups(ctx, cache, []*NodeClaimTemplate{unlimited}, nil)[unlimited]
+	firstLimited := buildDaemonOverheadGroups(ctx, cache, []*NodeClaimTemplate{limited}, nil)[limited]
+	secondUnlimited := buildDaemonOverheadGroups(ctx, cache, []*NodeClaimTemplate{unlimited}, nil)[unlimited]
+	secondLimited := buildDaemonOverheadGroups(ctx, cache, []*NodeClaimTemplate{limited}, nil)[limited]
+
+	if &firstUnlimited[0] != &secondUnlimited[0] || &firstLimited[0] != &secondLimited[0] {
+		t.Fatalf("expected both fingerprints to stay cached across interleaved builds")
+	}
+	if &firstUnlimited[0] == &firstLimited[0] {
+		t.Fatalf("expected distinct groups per fingerprint")
 	}
 }

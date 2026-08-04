@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/cloudprovider/fake"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	"sigs.k8s.io/karpenter/pkg/events"
+	"sigs.k8s.io/karpenter/pkg/operator/options"
 )
 
 func TestSingleNodeConsolidationComputeCommandsStartsCachePass(t *testing.T) {
@@ -50,7 +51,8 @@ func TestSingleNodeConsolidationComputeCommandsStartsCachePass(t *testing.T) {
 		nil,
 	)
 
-	if _, err := NewSingleNodeConsolidation(consolidation).ComputeCommands(context.Background(), nil); err != nil {
+	ctx := options.ToContext(context.Background(), &options.Options{})
+	if _, err := NewSingleNodeConsolidation(consolidation).ComputeCommands(ctx, nil); err != nil {
 		t.Fatalf("single-node consolidation pass failed: %v", err)
 	}
 }
