@@ -103,11 +103,15 @@ const (
 	// CandidateSkipNoCheaperReplacementSet is the same verdict for a multi-node replacement plan:
 	// no combination of the required replacements beats the candidates' price.
 	CandidateSkipNoCheaperReplacementSet = "no_cheaper_replacement_set"
-	// CandidateSkipReplacementFlexibility means cheaper capacity does exist but the surviving
-	// options could not satisfy the NodePool's minValues requirements.
+	// CandidateSkipReplacementFlexibility means cheaper capacity does exist but the options that
+	// survived the price ceiling could not satisfy the NodePool's minValues requirements. This
+	// fleet is waiting on requirements, not on prices.
 	CandidateSkipReplacementFlexibility = "replacement_flexibility"
-	// CandidateSkipPriceFilterError means the price filter itself failed.
-	CandidateSkipPriceFilterError = "price_filter_error"
+	// CandidateSkipNoCompatibleReplacement means a replacement reached the price filter with no
+	// instance type options at all, so no price was ever compared: its requirements excluded
+	// everything. Spot-to-spot narrows options to spot-compatible types before pricing, which is
+	// the usual way a claim arrives empty.
+	CandidateSkipNoCompatibleReplacement = "no_compatible_replacement"
 	// CandidateSkipSpotToSpotDisabled means the candidate and its replacement are both spot and the
 	// SpotToSpotConsolidation feature gate is off, so price was never consulted.
 	CandidateSkipSpotToSpotDisabled = "spot_to_spot_disabled"

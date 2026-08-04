@@ -425,29 +425,44 @@ func (c *consolidation) computeSpotToSpotConsolidation(ctx context.Context, cand
 // ordinary path already reported on, so it stays silent). The second return value is the skip reason for the
 // rejection, empty when the replacements survive.
 func (c *consolidation) filterReplacementsAndPublish(newNodeClaims []*pscheduling.NodeClaim, candidates []*Candidate, candidatePrice float64, publishEvents bool) (bool, string) {
-	anyCheaper, err := filterReplacementsByAggregatePrice(newNodeClaims, candidatePrice)
-	if err != nil {
+	noOptions := func() bool {
+		return lo.SomeBy(newNodeClaims, func(nc *pscheduling.NodeClaim) bool { return len(nc.InstanceTypeOptions) == 0 })
+	}
+	// A replacement that arrives with nothing to price was excluded by its own requirements, not by
+	// the market. Spot-to-spot narrows options to spot-compatible types just before this call, so
+	// pricing an empty claim would report "nothing cheaper exists" for a compatibility failure.
+	if noOptions() {
+		c.publishCantReplace(newNodeClaims, candidates, publishEvents)
+		return false, CandidateSkipNoCompatibleReplacement
+	}
+	if err := filterReplacementsByAggregatePrice(newNodeClaims, candidatePrice); err != nil {
 		if len(candidates) == 1 && publishEvents {
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Filtering by price: %v", err))...)
 		}
-		return false, CandidateSkipPriceFilterError
+		// RemoveInstanceTypeOptionsByPriceAndMinValues only errors out of SatisfiesMinValues, and it
+		// reaches that check having kept every option under the ceiling: cheaper capacity exists and
+		// the surviving set is too narrow for minValues.
+		return false, CandidateSkipReplacementFlexibility
 	}
-	if lo.SomeBy(newNodeClaims, func(nc *pscheduling.NodeClaim) bool { return len(nc.InstanceTypeOptions) == 0 }) {
-		if len(candidates) == 1 && publishEvents {
-			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Can't replace with %s", lo.Ternary(len(newNodeClaims) == 1, "a cheaper node", "cheaper nodes")))...)
-		}
-		// Separate "the market has nothing cheaper" from "cheaper capacity exists but the surviving
-		// options can't satisfy minValues": the first waits on prices, the second on requirements.
-		switch {
-		case anyCheaper:
-			return false, CandidateSkipReplacementFlexibility
-		case len(newNodeClaims) == 1:
+	if noOptions() {
+		c.publishCantReplace(newNodeClaims, candidates, publishEvents)
+		// Nothing survived the price ceiling, so the fleet is waiting on cheaper offerings. One
+		// replacement means one node of the candidate's shape fits its pods and no such node is
+		// cheaper, which is what the split fallback exists to serve.
+		if len(newNodeClaims) == 1 {
 			return false, CandidateSkipNoCheaperSingleReplacement
-		default:
-			return false, CandidateSkipNoCheaperReplacementSet
 		}
+		return false, CandidateSkipNoCheaperReplacementSet
 	}
 	return true, ""
+}
+
+// publishCantReplace reports a single-node candidate that consolidation found no replacement for.
+func (c *consolidation) publishCantReplace(newNodeClaims []*pscheduling.NodeClaim, candidates []*Candidate, publishEvents bool) {
+	if len(candidates) != 1 || !publishEvents {
+		return
+	}
+	c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Can't replace with %s", lo.Ternary(len(newNodeClaims) == 1, "a cheaper node", "cheaper nodes")))...)
 }
 
 // truncateSpotInstanceTypeOptions caps a replacement NodeClaim's instance type options to the 15 cheapest (or the
@@ -469,9 +484,9 @@ func truncateSpotInstanceTypeOptions(nc *pscheduling.NodeClaim) {
 // guaranteed to sum below candidatePrice. With a single replacement this reduces to the classic
 // RemoveInstanceTypeOptionsByPriceAndMinValues(reqs, candidatePrice) behavior.
 //
-// It reports whether any combination of replacements is cheaper than the candidates at all, which distinguishes a
-// price rejection from options the minValues filter removed afterwards.
-func filterReplacementsByAggregatePrice(newNodeClaims []*pscheduling.NodeClaim, candidatePrice float64) (bool, error) {
+// Claims left with no options are how it reports that nothing is cheaper; the only error it returns is a minValues
+// failure from a claim whose cheaper options were kept.
+func filterReplacementsByAggregatePrice(newNodeClaims []*pscheduling.NodeClaim, candidatePrice float64) error {
 	cheapest := make([]float64, len(newNodeClaims))
 	cheapestTotal := 0.0
 	for i, nc := range newNodeClaims {
@@ -489,7 +504,7 @@ func filterReplacementsByAggregatePrice(newNodeClaims []*pscheduling.NodeClaim, 
 		for _, nc := range newNodeClaims {
 			nc.InstanceTypeOptions = nil
 		}
-		return false, nil
+		return nil
 	}
 	// Give each claim its cheapest launch price plus an equal share of the surplus budget: the budgets sum to
 	// candidatePrice, every claim's budget strictly exceeds its cheapest option (even zero-priced ones), and any
@@ -503,8 +518,8 @@ func filterReplacementsByAggregatePrice(newNodeClaims []*pscheduling.NodeClaim, 
 			maxPrice = cheapest[i] + surplusShare
 		}
 		if _, err := nc.RemoveInstanceTypeOptionsByPriceAndMinValues(nc.Requirements, maxPrice); err != nil {
-			return true, err
+			return err
 		}
 	}
-	return true, nil
+	return nil
 }
