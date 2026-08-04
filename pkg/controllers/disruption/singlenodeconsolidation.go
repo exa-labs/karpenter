@@ -209,14 +209,22 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 
 	if len(proposals) > 0 {
 		admitted, err := s.admitProposals(ctx, proposals, timeout)
-		ObserveConsolidationCommandsAdmitted(s.ConsolidationType(), len(admitted))
+		// Only passes that actually held a batch are observed, so the histogram's rate is the rate
+		// of batched passes: a pass holding one proposal admits exactly as the unbatched controller
+		// would, and would otherwise pile samples of 1 onto the distribution being measured.
+		if len(proposals) > 1 {
+			ObserveConsolidationCommandsAdmitted(s.ConsolidationType(), len(admitted))
+		}
+		// A failure partway through admission still leaves the earlier commands queued and running,
+		// so the pass acted. The outcome records what the pass did; ConsolidationAdmissionFailuresTotal
+		// records that the rest of it did not.
+		if len(admitted) > 0 && !timedOut {
+			outcome = PassOutcomeCompleted
+		}
 		if err != nil {
 			return admitted, err
 		}
 		if len(admitted) > 0 {
-			if !timedOut {
-				outcome = PassOutcomeCompleted
-			}
 			return admitted, nil
 		}
 		// Every proposal was rejected at admission. The cluster still holds candidates worth

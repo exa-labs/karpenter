@@ -150,6 +150,31 @@ var _ = Describe("Batched Single-Node Consolidation", func() {
 		return metric.GetCounter().GetValue()
 	}
 
+	// batchedPasses reads how many passes reported a batch size, and passOutcomes the running total
+	// of passes that ended with the given outcome.
+	batchedPasses := func() uint64 {
+		GinkgoHelper()
+		metric, found := FindMetricWithLabelValues("karpenter_voluntary_disruption_consolidation_commands_admitted_per_pass", map[string]string{
+			"consolidation_type": disruption.SingleNodeConsolidationType,
+		})
+		if !found {
+			return 0
+		}
+		return metric.GetHistogram().GetSampleCount()
+	}
+
+	passOutcomes := func(outcome string) float64 {
+		GinkgoHelper()
+		metric, found := FindMetricWithLabelValues("karpenter_voluntary_disruption_consolidation_pass_outcomes_total", map[string]string{
+			"consolidation_type": disruption.SingleNodeConsolidationType,
+			"outcome":            outcome,
+		})
+		if !found {
+			return 0
+		}
+		return metric.GetCounter().GetValue()
+	}
+
 	candidatesFor := func(m *disruption.SingleNodeConsolidation) []*disruption.Candidate {
 		GinkgoHelper()
 		candidates, err := disruption.GetCandidates(ctx, cluster, env.Client, recorder, env.Clock, cloudProvider, m.ShouldDisrupt, m.Class(), queue)
@@ -282,6 +307,8 @@ var _ = Describe("Batched Single-Node Consolidation", func() {
 		blocker := &blockingValidator{blockCall: 1}
 		method := newSingleNodeConsolidation(blocker)
 		blocker.method = method
+		completed := passOutcomes("completed")
+		noop := passOutcomes("no_op")
 
 		cmds, err := method.ComputeCommands(ctx, map[string]int{nodePool.Name: 100}, candidatesFor(method)...)
 		Expect(err).To(HaveOccurred())
@@ -289,6 +316,33 @@ var _ = Describe("Batched Single-Node Consolidation", func() {
 		Expect(cmds).To(HaveLen(1))
 		Expect(cmds[0].Admitted).To(BeTrue())
 		Expect(queue.GetCommands()).To(HaveLen(2))
+		// A pass that queued a command acted, however the rest of admission went.
+		Expect(passOutcomes("completed")).To(Equal(completed + 1))
+		Expect(passOutcomes("no_op")).To(Equal(noop))
+	})
+
+	It("does not report a batch size for a pass that held one proposal", func() {
+		applyNodes(4, "1")
+		batched := batchedPasses()
+
+		// A budget of one leaves the pass holding a single proposal, which is what the unbatched
+		// controller would have done.
+		cmds, err := singleNode.ComputeCommands(ctx, map[string]int{nodePool.Name: 1}, candidatesFor(singleNode)...)
+		Expect(err).To(Succeed())
+		Expect(cmds).To(HaveLen(1))
+		// One proposal is what the unbatched controller does, so it must not count as a batch,
+		// or the histogram's sample rate stops meaning "passes that batched".
+		Expect(batchedPasses()).To(Equal(batched))
+	})
+
+	It("reports a batch size for a pass that held several proposals", func() {
+		applyNodes(4, "1")
+		batched := batchedPasses()
+
+		cmds, err := singleNode.ComputeCommands(ctx, map[string]int{nodePool.Name: 100}, candidatesFor(singleNode)...)
+		Expect(err).To(Succeed())
+		Expect(cmds).To(HaveLen(3))
+		Expect(batchedPasses()).To(Equal(batched + 1))
 	})
 
 	It("stops admitting once the pass runs out of its admission reserve", func() {
