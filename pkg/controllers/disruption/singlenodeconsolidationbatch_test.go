@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
+	clocktesting "k8s.io/utils/clock/testing"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/controllers/disruption"
@@ -75,6 +76,42 @@ func (v *blockingValidator) Validate(ctx context.Context, cmd disruption.Command
 		}
 	}
 	return cmd, nil
+}
+
+// slowValidator burns a fixed amount of the pass's admission budget per call by advancing the
+// suite's fake clock, which is how a test reaches the reserve gate without any real waiting.
+type slowValidator struct {
+	cost  time.Duration
+	calls int
+}
+
+func (v *slowValidator) Validate(_ context.Context, cmd disruption.Command, _ time.Duration) (disruption.Command, error) {
+	v.calls++
+	env.Clock.Step(v.cost)
+	return cmd, nil
+}
+
+// steppingClock advances every time it is read, which walks a pass past its own timeout with
+// proposals in hand without the test waiting for anything.
+type steppingClock struct {
+	*clocktesting.FakeClock
+	step time.Duration
+}
+
+func (c *steppingClock) Now() time.Time {
+	c.FakeClock.Step(c.step)
+	return c.FakeClock.Now()
+}
+
+// rejectingSlowValidator is slowValidator that also rejects, so a test can show that a rejected
+// attempt spends the budget the same way an admitted one does.
+type rejectingSlowValidator struct {
+	slowValidator
+}
+
+func (v *rejectingSlowValidator) Validate(ctx context.Context, cmd disruption.Command, period time.Duration) (disruption.Command, error) {
+	_, _ = v.slowValidator.Validate(ctx, cmd, period)
+	return disruption.Command{}, disruption.NewSchedulingValidationError(errors.New("stale plan"))
 }
 
 // immediateValidator runs the real consolidation validation without its settling wait, which the
@@ -345,32 +382,60 @@ var _ = Describe("Batched Single-Node Consolidation", func() {
 		Expect(batchedPasses()).To(Equal(batched + 1))
 	})
 
-	It("stops admitting once the pass runs out of its admission reserve", func() {
-		disruption.SingleNodeConsolidationTimeoutDuration = 5 * time.Second
+	It("stops admitting once validations outrun the admission budget", func() {
 		applyNodes(4, "1")
+		// Three held proposals budget 15s + 3x20s; a validation costing 30s leaves the third
+		// proposal inside the reserve, where admission stops.
+		slow := &slowValidator{cost: 30 * time.Second}
+		method := newSingleNodeConsolidation(slow)
 		skipped := admissionFailures(disruption.AdmissionStageDeadline, "admission_reserve")
 
-		cmds, err := singleNode.ComputeCommands(ctx, map[string]int{nodePool.Name: 100}, candidatesFor(singleNode)...)
+		cmds, err := method.ComputeCommands(ctx, map[string]int{nodePool.Name: 100}, candidatesFor(method)...)
 		Expect(err).To(Succeed())
-		// The first proposal is always attempted; the rest fall outside the reserve.
-		Expect(cmds).To(HaveLen(1))
-		Expect(queue.GetCommands()).To(HaveLen(1))
-		Expect(admissionFailures(disruption.AdmissionStageDeadline, "admission_reserve")).To(Equal(skipped + 2))
+		Expect(cmds).To(HaveLen(2))
+		Expect(queue.GetCommands()).To(HaveLen(2))
+		Expect(slow.calls).To(Equal(2))
+		Expect(admissionFailures(disruption.AdmissionStageDeadline, "admission_reserve")).To(Equal(skipped + 1))
 	})
 
-	It("spends its admission reserve on attempts, not on admissions", func() {
-		disruption.SingleNodeConsolidationTimeoutDuration = 5 * time.Second
+	It("spends its admission budget on attempts, not on admissions", func() {
 		applyNodes(4, "1")
-		validator.errs = []error{disruption.NewSchedulingValidationError(errors.New("stale plan"))}
+		slow := &rejectingSlowValidator{slowValidator: slowValidator{cost: 30 * time.Second}}
+		method := newSingleNodeConsolidation(slow)
 		skipped := admissionFailures(disruption.AdmissionStageDeadline, "admission_reserve")
 
-		cmds, err := singleNode.ComputeCommands(ctx, map[string]int{nodePool.Name: 100}, candidatesFor(singleNode)...)
+		cmds, err := method.ComputeCommands(ctx, map[string]int{nodePool.Name: 100}, candidatesFor(method)...)
 		Expect(err).To(Succeed())
 		Expect(cmds).To(BeEmpty())
-		// A rejected attempt costs a re-simulation too, so it consumes the pass's one attempt
-		// past the deadline rather than letting every remaining proposal validate for free.
-		Expect(validator.calls).To(Equal(1))
-		Expect(admissionFailures(disruption.AdmissionStageDeadline, "admission_reserve")).To(Equal(skipped + 2))
+		// A rejected attempt costs a re-simulation too, so it spends the budget rather than
+		// letting every remaining proposal validate for free.
+		Expect(slow.calls).To(Equal(2))
+		Expect(admissionFailures(disruption.AdmissionStageDeadline, "admission_reserve")).To(Equal(skipped + 1))
+	})
+
+	It("admits every proposal it holds when the walk times out", func() {
+		// The cap is above the candidate count, so the walk ends on the timeout rather than on a
+		// full batch.
+		ctx = options.ToContext(ctx, test.Options(test.OptionsFields{MaxConsolidationCommandsPerPass: lo.ToPtr(5)}))
+		applyNodes(5, "1")
+		// A clock that advances as the walk reads it runs the pass past its timeout with proposals
+		// in hand; the walk breaks out, and admission's own budget covers all of them.
+		disruption.SingleNodeConsolidationTimeoutDuration = 3 * time.Second
+		method := disruption.NewSingleNodeConsolidation(
+			disruption.MakeConsolidation(&steppingClock{FakeClock: env.Clock, step: time.Second}, cluster, env.Client, prov, cloudProvider, recorder, queue),
+			disruption.WithValidator(validator),
+		)
+		skipped := admissionFailures(disruption.AdmissionStageDeadline, "admission_reserve")
+		timedOut := passOutcomes("timed_out")
+
+		cmds, err := method.ComputeCommands(ctx, map[string]int{nodePool.Name: 100}, candidatesFor(method)...)
+		Expect(err).To(Succeed())
+		Expect(passOutcomes("timed_out")).To(Equal(timedOut + 1))
+		// Every proposal the walk was holding is admitted, not just the first.
+		Expect(len(cmds)).To(BeNumerically(">", 1))
+		Expect(queue.GetCommands()).To(HaveLen(len(cmds)))
+		// The elapsed pass timeout is not what gates admission, so nothing is skipped for it.
+		Expect(admissionFailures(disruption.AdmissionStageDeadline, "admission_reserve")).To(Equal(skipped))
 	})
 
 	It("rejects a proposal whose headroom an earlier command in the same pass consumed", func() {

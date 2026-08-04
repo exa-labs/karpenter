@@ -35,13 +35,23 @@ import (
 
 var SingleNodeConsolidationTimeoutDuration = 3 * time.Minute
 
-// commandAdmissionReserve is how much of the pass timeout is kept in reserve for admitting the
-// proposals a batched pass is already holding. Admission does real work per command - a settling
-// wait, a re-simulation, and the cloud provider calls that launch replacements - so a pass that
-// selected proposals right up against its deadline stops admitting rather than running long.
-// The first proposal is always attempted; today's pass admits its single command regardless of
-// the timer, and this preserves that.
+// commandAdmissionReserve is what admitting one held proposal is budgeted to cost: a
+// re-simulation and the cloud provider calls that launch its replacements. Admission stops once
+// less than a reserve of its budget remains, so validations running slower than budgeted end the
+// pass instead of letting it run long. The first proposal is always attempted; today's pass
+// admits its single command regardless of the timer, and this preserves that.
 var commandAdmissionReserve = 20 * time.Second
+
+// admissionBudget is how long a pass may spend admitting the proposals it holds, measured from
+// the moment the walk ends. Admission is budgeted apart from SingleNodeConsolidationTimeoutDuration
+// because the two bound different work: the pass timeout bounds discovery, which is the expensive
+// half, while admission's cost is set by how many proposals the pass is holding. Spending what is
+// left of the pass timeout instead would make admission cheapest exactly when the pass found the
+// most to do, and would leave a pass that broke out of its walk on timeout - the case where
+// holding proposals matters most - with no budget at all.
+func admissionBudget(proposals int) time.Duration {
+	return commandValidationDelay + time.Duration(proposals)*commandAdmissionReserve
+}
 
 const SingleNodeConsolidationType = "single"
 
@@ -126,7 +136,9 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 			if len(proposals) == 0 {
 				return []Command{}, nil
 			}
-			// Proposals the pass already paid to find are still worth admitting.
+			// Proposals the pass already paid to find are still worth admitting. Admission has its
+			// own budget, so all of them get their attempt; the pass runs past its timeout by that
+			// budget, which buys the commands a timed-out pass used to throw away.
 			break
 		}
 		// Track that we've seen this nodepool
@@ -208,7 +220,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 	}
 
 	if len(proposals) > 0 {
-		admitted, err := s.admitProposals(ctx, proposals, timeout)
+		admitted, err := s.admitProposals(ctx, proposals)
 		// Only passes that actually held a batch are observed, so the histogram's rate is the rate
 		// of batched passes: a pass holding one proposal admits exactly as the unbatched controller
 		// would, and would otherwise pile samples of 1 onto the distribution being measured.
@@ -256,8 +268,11 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 // an earlier command consumed fails validation the same way a plan drifting across the settling
 // window does today, instead of double-booking that capacity. Validating the whole batch first
 // and starting the commands concurrently would lose exactly that property.
-func (s *SingleNodeConsolidation) admitProposals(ctx context.Context, proposals []consolidationProposal, deadline time.Time) ([]Command, error) {
+func (s *SingleNodeConsolidation) admitProposals(ctx context.Context, proposals []consolidationProposal) ([]Command, error) {
 	admitted := []Command{}
+	// Admission runs on its own budget, so a pass that walked right up to its timeout - or past it,
+	// having broken out of the walk holding proposals - still admits what it paid to find.
+	deadline := s.clock.Now().Add(admissionBudget(len(proposals)))
 	// The settling window observes churn in the pass as a whole, so only the first validation
 	// waits it out; the rest inherit the elapsed time, as they do within one multi-node command.
 	validationDelay := commandValidationDelay
