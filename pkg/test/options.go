@@ -51,6 +51,7 @@ type OptionsFields struct {
 	NodeMetricsInterval              *time.Duration
 	IgnoreDRARequests                *bool
 	MaxConsolidationReplacements     *int
+	MaxConsolidationCommandsPerPass  *int
 	ConsolidationSplitFallback       *bool
 	ConsolidationSplitMaxAttempts    *int
 	ConsolidationSplitMinSavings     *float64
@@ -96,6 +97,7 @@ func Options(overrides ...OptionsFields) *options.Options {
 		MinValuesPolicy:                  lo.FromPtrOr(opts.MinValuesPolicy, options.MinValuesPolicyStrict),
 		IgnoreDRARequests:                lo.FromPtrOr(opts.IgnoreDRARequests, true),
 		MaxConsolidationReplacements:     lo.FromPtrOr(opts.MaxConsolidationReplacements, 1),
+		MaxConsolidationCommandsPerPass:  lo.FromPtrOr(opts.MaxConsolidationCommandsPerPass, 1),
 		ConsolidationSplitFallback:       lo.FromPtrOr(opts.ConsolidationSplitFallback, false),
 		ConsolidationSplitMaxAttempts:    lo.FromPtrOr(opts.ConsolidationSplitMaxAttempts, 50),
 		ConsolidationSplitMinSavings:     lo.FromPtrOr(opts.ConsolidationSplitMinSavings, 0.05),

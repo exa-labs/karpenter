@@ -218,9 +218,16 @@ func (c *Controller) disrupt(ctx context.Context, disruption Method) (bool, erro
 		return false, nil
 	}
 
-	errs := make([]error, len(cmds))
-	workqueue.ParallelizeUntil(ctx, len(cmds), len(cmds), func(i int) {
-		cmd := cmds[i]
+	// A method that admits its commands itself has already validated and queued them against
+	// live state, one at a time. Starting them again would trip the queue's overlap guard.
+	pending := lo.Filter(cmds, func(c Command, _ int) bool { return !c.Admitted })
+	if len(pending) == 0 {
+		return true, nil
+	}
+
+	errs := make([]error, len(pending))
+	workqueue.ParallelizeUntil(ctx, len(pending), len(pending), func(i int) {
+		cmd := pending[i]
 
 		// Assign common fields
 		cmd.CreationTimestamp = c.clock.Now()

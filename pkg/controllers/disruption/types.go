@@ -242,6 +242,11 @@ type Command struct {
 	// candidate's pods onto a single replacement, so revalidating it unlimited would always disagree on the
 	// replacement count.
 	NewCapacityPriceLimit float64
+	// Admitted marks a command the method validated and queued itself. Batched single-node
+	// admission does this so that each command is validated against a cluster state that
+	// already reflects the commands admitted before it; the controller must not start such a
+	// command a second time.
+	Admitted bool
 }
 
 // Reason returns the disruption reason for this command.
