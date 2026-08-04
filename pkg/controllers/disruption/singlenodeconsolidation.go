@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/awslabs/operatorpkg/option"
+	"github.com/google/uuid"
 	"github.com/samber/lo"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -34,7 +35,33 @@ import (
 
 var SingleNodeConsolidationTimeoutDuration = 3 * time.Minute
 
+// commandAdmissionReserve is what admitting one held proposal is budgeted to cost: a
+// re-simulation and the cloud provider calls that launch its replacements. Admission stops once
+// less than a reserve of its budget remains, so validations running slower than budgeted end the
+// pass instead of letting it run long. The first proposal is always attempted; today's pass
+// admits its single command regardless of the timer, and this preserves that.
+var commandAdmissionReserve = 20 * time.Second
+
+// admissionBudget is how long a pass may spend admitting the proposals it holds, measured from
+// the moment the walk ends. Admission is budgeted apart from SingleNodeConsolidationTimeoutDuration
+// because the two bound different work: the pass timeout bounds discovery, which is the expensive
+// half, while admission's cost is set by how many proposals the pass is holding. Spending what is
+// left of the pass timeout instead would make admission cheapest exactly when the pass found the
+// most to do, and would leave a pass that broke out of its walk on timeout - the case where
+// holding proposals matters most - with no budget at all.
+func admissionBudget(proposals int) time.Duration {
+	return commandValidationDelay + time.Duration(proposals)*commandAdmissionReserve
+}
+
 const SingleNodeConsolidationType = "single"
+
+// consolidationProposal is a command a pass has selected but not yet validated or queued.
+type consolidationProposal struct {
+	cmd Command
+	// position is the candidate's index in the sorted candidate list, recorded so accepted
+	// commands still report the traversal depth they were found at.
+	position int
+}
 
 // SingleNodeConsolidation evaluates one node at a time for consolidation.
 type SingleNodeConsolidation struct {
@@ -81,25 +108,60 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 
 	unseenNodePools := sets.New(lo.Map(candidates, func(c *Candidate, _ int) string { return c.NodePool.Name })...)
 
+	// A pass may hold several proposals before admitting any of them. Discovery, not admission,
+	// is what a pass is expensive for, so a pass that has already walked the candidate list can
+	// carry more than one command out of it. maxCommands of 1 keeps the classic behavior of
+	// validating and returning the first accepted command.
+	maxCommands := options.FromContext(ctx).MaxConsolidationCommandsPerPass
+	proposals := []consolidationProposal{}
+	// claimedProviderIDs holds every candidate of every proposal, so two proposals can never
+	// name the same node. Multi-candidate commands contribute all of their candidates.
+	claimedProviderIDs := sets.New[string]()
+	// balancedNodePoolsHeld bounds Balanced pools to one proposal per pass: their scores come
+	// from NodePool totals computed once per pass, which the first move invalidates.
+	balancedNodePoolsHeld := sets.New[string]()
+
+	timedOut := false
 	for i, candidate := range candidates {
 		if s.clock.Now().After(timeout) {
 			outcome = PassOutcomeTimedOut
 			depth = i
+			timedOut = true
 			ConsolidationTimeoutsTotal.Inc(map[string]string{ConsolidationTypeLabel: s.ConsolidationType()})
 			log.FromContext(ctx).V(1).Info("abandoning single-node consolidation due to timeout", "candidates_evaluated", i)
 
 			s.PreviouslyUnseenNodePools = unseenNodePools
 			ObserveUnseenNodePools(s.ConsolidationType(), unseenNodePools.UnsortedList())
 
-			return []Command{}, nil
+			if len(proposals) == 0 {
+				return []Command{}, nil
+			}
+			// Proposals the pass already paid to find are still worth admitting. Admission has its
+			// own budget, so all of them get their attempt; the pass runs past its timeout by that
+			// budget, which buys the commands a timed-out pass used to throw away.
+			break
 		}
 		// Track that we've seen this nodepool
 		unseenNodePools.Delete(candidate.NodePool.Name)
 		evaluatedCandidateDepthByNodePool[candidate.NodePool.Name]++
 
-		// If the disruption budget doesn't allow this candidate to be disrupted,
-		// continue to the next candidate. We don't need to decrement any budget
-		// counter since single node consolidation commands can only have one candidate.
+		// Candidates an earlier proposal in this pass already claims cannot be part of a second
+		// command: the queue admits a node to at most one in-flight command.
+		if claimedProviderIDs.Has(candidate.ProviderID()) {
+			observeCandidateSkip(s.ConsolidationType(), candidate, CandidateSkipClaimedByPendingCommand)
+			depth = i + 1
+			continue
+		}
+		if balancedNodePoolsHeld.Has(candidate.NodePool.Name) {
+			observeCandidateSkip(s.ConsolidationType(), candidate, CandidateSkipPoolCommandHeld)
+			depth = i + 1
+			continue
+		}
+
+		// If the disruption budget doesn't allow this candidate to be disrupted, continue to the
+		// next candidate. The mapping is decremented when a proposal is held, so a pass carrying
+		// several commands cannot overspend a pool's budget; validation recomputes the budget
+		// from live state before each command is queued and remains authoritative.
 		if disruptionBudgetMapping[candidate.NodePool.Name] == 0 {
 			constrainedByBudgets = true
 			observeCandidateSkip(s.ConsolidationType(), candidate, CandidateSkipBudgetExhausted)
@@ -130,17 +192,56 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 			observeCandidateSkip(s.ConsolidationType(), candidate, CandidateSkipApprovalRejected)
 			continue
 		}
-		if _, err = s.validator.Validate(ctx, cmd, commandValidationDelay); err != nil {
-			if IsValidationError(err) {
-				reason := getValidationFailureReason(err)
-				cmd.EmitRejectedEvents(s.recorder, reason)
-				return []Command{}, nil
+		if maxCommands <= 1 {
+			if _, err = s.validator.Validate(ctx, cmd, commandValidationDelay); err != nil {
+				if IsValidationError(err) {
+					reason := getValidationFailureReason(err)
+					cmd.EmitRejectedEvents(s.recorder, reason)
+					return []Command{}, nil
+				}
+				return []Command{}, fmt.Errorf("validating consolidation, %w", err)
 			}
-			return []Command{}, fmt.Errorf("validating consolidation, %w", err)
+			outcome = PassOutcomeCompleted
+			ObserveAcceptedCandidate(cmd, s.ConsolidationType(), i)
+			return []Command{cmd}, nil
 		}
-		outcome = PassOutcomeCompleted
-		ObserveAcceptedCandidate(cmd, s.ConsolidationType(), i)
-		return []Command{cmd}, nil
+
+		proposals = append(proposals, consolidationProposal{cmd: cmd, position: i})
+		for _, held := range cmd.Candidates {
+			claimedProviderIDs.Insert(held.ProviderID())
+		}
+		disruptionBudgetMapping[candidate.NodePool.Name]--
+		if candidate.NodePool.Spec.Disruption.ConsolidationPolicy.IsBalanced() {
+			balancedNodePoolsHeld.Insert(candidate.NodePool.Name)
+		}
+		if len(proposals) >= maxCommands {
+			break
+		}
+	}
+
+	if len(proposals) > 0 {
+		admitted, err := s.admitProposals(ctx, proposals)
+		// Only passes that actually held a batch are observed, so the histogram's rate is the rate
+		// of batched passes: a pass holding one proposal admits exactly as the unbatched controller
+		// would, and would otherwise pile samples of 1 onto the distribution being measured.
+		if len(proposals) > 1 {
+			ObserveConsolidationCommandsAdmitted(s.ConsolidationType(), len(admitted))
+		}
+		// A failure partway through admission still leaves the earlier commands queued and running,
+		// so the pass acted. The outcome records what the pass did; ConsolidationAdmissionFailuresTotal
+		// records that the rest of it did not.
+		if len(admitted) > 0 && !timedOut {
+			outcome = PassOutcomeCompleted
+		}
+		if err != nil {
+			return admitted, err
+		}
+		if len(admitted) > 0 {
+			return admitted, nil
+		}
+		// Every proposal was rejected at admission. The cluster still holds candidates worth
+		// re-evaluating, so don't mark the fleet consolidated.
+		return []Command{}, nil
 	}
 
 	if !constrainedByBudgets {
@@ -153,6 +254,65 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 	s.PreviouslyUnseenNodePools = unseenNodePools
 
 	return []Command{}, nil
+}
+
+// admitProposals validates and queues held proposals one at a time.
+//
+// Sequencing is the safety property, not an implementation detail. StartCommand taints the
+// candidates, launches their replacements and marks them for deletion before it returns, so by
+// the time the next proposal is validated the cluster state it re-simulates against already
+// contains the effects of every command admitted before it. A proposal that depended on capacity
+// an earlier command consumed fails validation the same way a plan drifting across the settling
+// window does today, instead of double-booking that capacity. Validating the whole batch first
+// and starting the commands concurrently would lose exactly that property.
+func (s *SingleNodeConsolidation) admitProposals(ctx context.Context, proposals []consolidationProposal) ([]Command, error) {
+	admitted := []Command{}
+	// Admission runs on its own budget, so a pass that walked right up to its timeout - or past it,
+	// having broken out of the walk holding proposals - still admits what it paid to find.
+	deadline := s.clock.Now().Add(admissionBudget(len(proposals)))
+	// The settling window observes churn in the pass as a whole, so only the first validation
+	// waits it out; the rest inherit the elapsed time, as they do within one multi-node command.
+	validationDelay := commandValidationDelay
+	// The first proposal is always attempted, since a pass has always been allowed to validate
+	// the command it found. Every proposal after it costs another re-simulation, so the reserve
+	// gates them whether or not the attempts before them produced a command.
+	attempted := false
+	for _, proposal := range proposals {
+		if attempted && !s.clock.Now().Add(commandAdmissionReserve).Before(deadline) {
+			ObserveConsolidationAdmissionFailure(s.ConsolidationType(), AdmissionStageDeadline, "admission_reserve")
+			continue
+		}
+		if validationDelay == 0 {
+			// The validator only drops topology reads pinned earlier in the pass when it waits.
+			// Commands admitted before this one moved pods, so drop them here as well.
+			ctx = scheduling.WithTopologyPassCache(ctx, scheduling.NewTopologyPassCache())
+		}
+		_, err := s.validator.Validate(ctx, proposal.cmd, validationDelay)
+		validationDelay = 0
+		attempted = true
+		if err != nil {
+			if !IsValidationError(err) {
+				return admitted, fmt.Errorf("validating consolidation, %w", err)
+			}
+			reason := getValidationFailureReason(err)
+			proposal.cmd.EmitRejectedEvents(s.recorder, reason)
+			ObserveConsolidationAdmissionFailure(s.ConsolidationType(), AdmissionStageValidation, reason)
+			continue
+		}
+
+		cmd := proposal.cmd
+		cmd.CreationTimestamp = s.clock.Now()
+		cmd.ID = uuid.New()
+		cmd.Method = s
+		cmd.Admitted = true
+		if err := s.queue.StartCommand(ctx, &cmd); err != nil {
+			ObserveConsolidationAdmissionFailure(s.ConsolidationType(), AdmissionStageStart, "error")
+			return admitted, fmt.Errorf("disrupting candidates, %w", err)
+		}
+		ObserveAcceptedCandidate(cmd, s.ConsolidationType(), proposal.position)
+		admitted = append(admitted, cmd)
+	}
+	return admitted, nil
 }
 
 func (s *SingleNodeConsolidation) Reason() v1.DisruptionReason {

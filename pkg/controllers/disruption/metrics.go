@@ -125,6 +125,24 @@ const (
 	CandidateSkipPodsDidNotSchedule   = "pods_did_not_schedule"
 	CandidateSkipMultipleReplacements = "multiple_replacements_required"
 	CandidateSkipApprovalRejected     = "approval_rejected"
+	// CandidateSkipClaimedByPendingCommand marks a candidate that an earlier proposal in the
+	// same pass already holds. Commands admitted from one pass must not overlap.
+	CandidateSkipClaimedByPendingCommand = "claimed_by_pending_command"
+	// CandidateSkipPoolCommandHeld marks a candidate whose Balanced NodePool already holds a
+	// proposal in this pass. Balanced scoring uses NodePool totals computed once per pass, so
+	// a second move in the same pool would be scored against totals the first move invalidates.
+	CandidateSkipPoolCommandHeld = "pool_command_held"
+)
+
+const (
+	// AdmissionStageValidation marks a proposal rejected by its pre-admission validation.
+	AdmissionStageValidation = "validation"
+	// AdmissionStageStart marks a proposal that failed while being queued, i.e. tainting,
+	// launching replacements, or the queue's own overlap guard.
+	AdmissionStageStart = "start"
+	// AdmissionStageDeadline marks proposals left unattempted because the pass ran out of its
+	// admission reserve.
+	AdmissionStageDeadline = "deadline"
 )
 
 const (
@@ -371,6 +389,27 @@ var (
 			Help:      "Number of consolidation passes by outcome and consolidation type.",
 		},
 		[]string{ConsolidationTypeLabel, outcomeLabel},
+	)
+	ConsolidationCommandsAdmittedPerPass = opmetrics.NewPrometheusHistogram(
+		crmetrics.Registry,
+		prometheus.HistogramOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "consolidation_commands_admitted_per_pass",
+			Help:      "Number of disruption commands admitted by a single consolidation pass that held more than one proposal. Only observed when batched admission is enabled, so a zero observation means every held proposal was rejected at admission.",
+			Buckets:   []float64{0, 1, 2, 3, 4, 5, 8, 10, 20},
+		},
+		[]string{ConsolidationTypeLabel},
+	)
+	ConsolidationAdmissionFailuresTotal = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "consolidation_admission_failures_total",
+			Help:      "Number of held consolidation proposals that did not become commands, by the stage that rejected them and the reason.",
+		},
+		[]string{ConsolidationTypeLabel, stageLabel, reasonLabel},
 	)
 	ConsolidationCandidateSkipsTotal = opmetrics.NewPrometheusCounter(
 		crmetrics.Registry,
@@ -632,6 +671,23 @@ func orUnknown(value string) string {
 		return unknownTypeValue
 	}
 	return value
+}
+
+// ObserveConsolidationCommandsAdmitted records how many of a batched pass's held proposals
+// became commands.
+func ObserveConsolidationCommandsAdmitted(consolidationType string, admitted int) {
+	ConsolidationCommandsAdmittedPerPass.Observe(float64(admitted), map[string]string{
+		ConsolidationTypeLabel: consolidationType,
+	})
+}
+
+// ObserveConsolidationAdmissionFailure records a held proposal that did not become a command.
+func ObserveConsolidationAdmissionFailure(consolidationType, stage, reason string) {
+	ConsolidationAdmissionFailuresTotal.Inc(map[string]string{
+		ConsolidationTypeLabel: consolidationType,
+		stageLabel:             stage,
+		reasonLabel:            reason,
+	})
 }
 
 // ObserveConsolidationSplitAttempt records the outcome of one split fallback attempt, or of a
