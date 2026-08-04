@@ -187,8 +187,11 @@ var _ = Describe("Census", func() {
 		ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{nodes[0], nodes[1]}, []*v1.NodeClaim{nodeClaims[0], nodeClaims[1]})
 		ExpectSingletonReconciled(ctx, censusController)
 
+		// scoped to the census type: the single-node suite legitimately exhausts a real budget, and the
+		// registry is process-global
 		_, found := FindMetricWithLabelValues(splitAttemptsMetric, map[string]string{
-			"outcome": disruption.SplitOutcomeAttemptCapExhausted,
+			"consolidation_type": disruption.CensusConsolidationType,
+			"outcome":            disruption.SplitOutcomeAttemptCapExhausted,
 		})
 		Expect(found).To(BeFalse())
 		// the sweep retries under its own budget, and what it records stays on its own consolidation type
