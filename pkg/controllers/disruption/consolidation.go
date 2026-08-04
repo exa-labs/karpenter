@@ -210,7 +210,7 @@ func (c *consolidation) computeConsolidationWithinCandidateBudget(ctx context.Co
 }
 
 // candidateBudgetExhausted reports whether a finished simulation should be discarded because the
-// candidate ran out of its own budget, rather than because the pass is shutting down. A cancelled
+// candidate ran out of its own budget, rather than because the pass is shutting down. A canceled
 // solve returns whatever it had placed so far, so an exhausted budget invalidates the result even
 // when the simulation itself reported no error.
 func candidateBudgetExhausted(candidateErr, parentErr error) bool {

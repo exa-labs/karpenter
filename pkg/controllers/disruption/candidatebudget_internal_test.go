@@ -34,7 +34,7 @@ func TestCandidateBudgetExhausted(t *testing.T) {
 			want: false,
 		},
 		{
-			// A cancelled solve returns partial results, so an exhausted budget discards the
+			// A canceled solve returns partial results, so an exhausted budget discards the
 			// verdict whether or not the simulation reported an error.
 			name:         "candidate ran out of budget",
 			candidateErr: context.DeadlineExceeded,
