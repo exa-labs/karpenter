@@ -99,7 +99,7 @@ type steppingClock struct {
 }
 
 func (c *steppingClock) Now() time.Time {
-	c.FakeClock.Step(c.step)
+	c.Step(c.step)
 	return c.FakeClock.Now()
 }
 
