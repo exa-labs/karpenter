@@ -365,6 +365,48 @@ var _ = Describe("Consolidation", func() {
 			})
 			Expect(found).To(BeTrue())
 		})
+		It("should record why a no-op decision was a no-op", func() {
+			// a candidate already on the cheapest on-demand type has no cheaper single replacement,
+			// which is a different situation from pods that would not schedule or a skip below the
+			// savings margin, so the reason has to distinguish them
+			nodeClaim.Labels[corev1.LabelInstanceTypeStable] = leastExpensiveInstance.Name
+			nodeClaim.Labels[v1.CapacityTypeLabelKey] = leastExpensiveOffering.Requirements.Get(v1.CapacityTypeLabelKey).Any()
+			nodeClaim.Labels[corev1.LabelTopologyZone] = leastExpensiveOffering.Requirements.Get(corev1.LabelTopologyZone).Any()
+			node.Labels = nodeClaim.Labels
+			rs := test.ReplicaSet()
+			ExpectApplied(ctx, env.Client, rs)
+			Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(rs), rs)).To(Succeed())
+			pod := test.Pod(test.PodOptions{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion:         "apps/v1",
+							Kind:               "ReplicaSet",
+							Name:               rs.Name,
+							UID:                rs.UID,
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
+						},
+					}}})
+			ExpectApplied(ctx, env.Client, rs, pod, node, nodeClaim, nodePool)
+			ExpectManualBinding(ctx, env.Client, pod, node)
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			_, found := FindMetricWithLabelValues("karpenter_voluntary_disruption_consolidation_candidate_skips_total", map[string]string{
+				"consolidation_type":  "single",
+				metrics.NodePoolLabel: nodePool.Name,
+				"instance_type":       leastExpensiveInstance.Name,
+				"reason":              disruption.CandidateSkipNoCheaperSingleReplacement,
+			})
+			Expect(found).To(BeTrue())
+			_, found = FindMetricWithLabelValues("karpenter_voluntary_disruption_consolidation_candidate_skips_total", map[string]string{
+				"consolidation_type":  "single",
+				metrics.NodePoolLabel: nodePool.Name,
+				"reason":              disruption.CandidateSkipNoOp,
+			})
+			Expect(found).To(BeFalse())
+		})
 		It("should record the disrupted and launched types of an executed replacement", func() {
 			rs := test.ReplicaSet()
 			ExpectApplied(ctx, env.Client, rs)
