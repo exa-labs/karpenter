@@ -99,7 +99,7 @@ func (m *MultiNodeConsolidation) ComputeCommands(ctx context.Context, disruption
 			if initialBudget[candidate.NodePool.Name] == 0 {
 				skipReason = CandidateSkipBudgetExhausted
 			}
-			ObserveConsolidationCandidateSkip(m.ConsolidationType(), candidate.NodePool.Name, skipReason)
+			observeCandidateSkip(m.ConsolidationType(), candidate, skipReason)
 			continue
 		}
 		// set constrainedByBudgets to true if any node was a candidate but was constrained by a budget

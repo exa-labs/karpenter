@@ -26,6 +26,7 @@ import (
 
 	opmetrics "github.com/awslabs/operatorpkg/metrics"
 	"github.com/prometheus/client_golang/prometheus"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -45,6 +46,17 @@ const (
 	reasonLabel                  = "reason"
 	replacementCountLabel        = "replacement_count"
 	capacityTypeTransitionLabel  = "capacity_type_transition"
+	instanceTypeLabel            = "instance_type"
+	fromInstanceTypeLabel        = "from_instance_type"
+	fromCapacityTypeLabel        = "from_capacity_type"
+	toInstanceTypeLabel          = "to_instance_type"
+	toCapacityTypeLabel          = "to_capacity_type"
+	// unknownTypeValue labels an instance or capacity type the node's labels did not
+	// resolve, keeping the series present instead of silently dropping the observation.
+	unknownTypeValue = "unknown"
+	// multipleTypesValue collapses the source types of a command disrupting nodes of more
+	// than one instance type, so multi-node commands cannot multiply label cardinality.
+	multipleTypesValue = "multiple"
 )
 
 const (
@@ -307,9 +319,9 @@ var (
 			Namespace: metrics.Namespace,
 			Subsystem: voluntaryDisruptionSubsystem,
 			Name:      "consolidation_candidate_skips_total",
-			Help:      "Number of skipped single-node consolidation candidates by type, NodePool, and reason, plus budget-exhausted candidates from both methods.",
+			Help:      "Number of skipped single-node consolidation candidates by type, NodePool, candidate instance type, candidate capacity type, and reason, plus budget-exhausted candidates from both methods.",
 		},
-		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel, reasonLabel},
+		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel, instanceTypeLabel, metrics.CapacityTypeLabel, reasonLabel},
 	)
 	ConsolidationReplacementAttemptsTotal = opmetrics.NewPrometheusCounter(
 		crmetrics.Registry,
@@ -338,9 +350,19 @@ var (
 			Namespace: metrics.Namespace,
 			Subsystem: voluntaryDisruptionSubsystem,
 			Name:      "consolidation_executed_nodes_total",
-			Help:      "Number of nodes disrupted by consolidation commands that executed successfully, by type, NodePool, decision, and the number of replacement NodeClaims the command launched. Counted per disrupted node rather than per command so a multi-node command attributes to each candidate's own NodePool. Compare against consolidation_replacement_attempts_total to see how many simulated multi-replacement options actually execute.",
+			Help:      "Number of nodes disrupted by consolidation commands that executed successfully, by type, NodePool, decision, the disrupted node's instance and capacity type, and the number of replacement NodeClaims the command launched. Counted per disrupted node rather than per command so a multi-node command attributes to each candidate's own NodePool. Compare against consolidation_replacement_attempts_total to see how many simulated multi-replacement options actually execute.",
 		},
-		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel, decisionLabel, replacementCountLabel},
+		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel, decisionLabel, instanceTypeLabel, metrics.CapacityTypeLabel, replacementCountLabel},
+	)
+	ConsolidationReplacementLaunchesTotal = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "consolidation_replacement_launches_total",
+			Help:      "Number of replacement NodeClaims launched by consolidation commands that executed successfully, labeled with the instance and capacity type the command disrupted and the ones the replacement actually launched with. Counted per replacement, so a 1->2 command records both targets. from_instance_type is multiple when a command disrupted more than one instance type; to_instance_type is unknown when the launched NodeClaim's labels could not be read.",
+		},
+		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel, fromInstanceTypeLabel, fromCapacityTypeLabel, toInstanceTypeLabel, toCapacityTypeLabel},
 	)
 	ConsolidationSplitAttemptsTotal = opmetrics.NewPrometheusCounter(
 		crmetrics.Registry,
@@ -509,12 +531,45 @@ func ObserveUnseenNodePools(consolidationType string, nodePools []string) {
 	}
 }
 
-func ObserveConsolidationCandidateSkip(consolidationType, nodePool, reason string) {
+// ObserveConsolidationCandidateSkip records a candidate the pass declined to act on. The
+// instance and capacity type identify which shapes a reason is concentrated in, which
+// NodePool alone cannot: a pool routinely mixes types whose consolidation outcomes differ.
+func ObserveConsolidationCandidateSkip(consolidationType, nodePool, instanceType, capacityType, reason string) {
 	ConsolidationCandidateSkipsTotal.Inc(map[string]string{
-		ConsolidationTypeLabel: consolidationType,
-		metrics.NodePoolLabel:  nodePool,
-		reasonLabel:            reason,
+		ConsolidationTypeLabel:    consolidationType,
+		metrics.NodePoolLabel:     nodePool,
+		instanceTypeLabel:         orUnknown(instanceType),
+		metrics.CapacityTypeLabel: orUnknown(capacityType),
+		reasonLabel:               reason,
 	})
+}
+
+// observeCandidateSkip records a skip for a candidate, resolving its types.
+func observeCandidateSkip(consolidationType string, candidate *Candidate, reason string) {
+	ObserveConsolidationCandidateSkip(consolidationType, candidate.NodePool.Name, candidateInstanceTypeName(candidate), candidate.capacityType, reason)
+}
+
+// candidateInstanceTypeName resolves a candidate's instance type, preferring the resolved
+// InstanceType and falling back to the node's label for candidates whose NodePool no longer
+// offers the type they were launched from.
+func candidateInstanceTypeName(candidate *Candidate) string {
+	if candidate == nil {
+		return ""
+	}
+	if candidate.instanceType != nil {
+		return candidate.instanceType.Name
+	}
+	if candidate.StateNode == nil {
+		return ""
+	}
+	return candidate.Labels()[corev1.LabelInstanceTypeStable]
+}
+
+func orUnknown(value string) string {
+	if value == "" {
+		return unknownTypeValue
+	}
+	return value
 }
 
 // ObserveConsolidationSplitAttempt records the outcome of one split fallback attempt, or of a
@@ -559,12 +614,85 @@ func ObserveExecutedConsolidationCommand(cmd Command) {
 	bucket := executedReplacementCountBucket(len(cmd.Replacements))
 	for _, candidate := range cmd.Candidates {
 		ConsolidationExecutedNodesTotal.Inc(map[string]string{
-			ConsolidationTypeLabel: cmd.ConsolidationType(),
-			metrics.NodePoolLabel:  candidate.NodePool.Name,
-			decisionLabel:          string(cmd.Decision()),
-			replacementCountLabel:  bucket,
+			ConsolidationTypeLabel:    cmd.ConsolidationType(),
+			metrics.NodePoolLabel:     candidate.NodePool.Name,
+			decisionLabel:             string(cmd.Decision()),
+			instanceTypeLabel:         orUnknown(candidateInstanceTypeName(candidate)),
+			metrics.CapacityTypeLabel: orUnknown(candidate.capacityType),
+			replacementCountLabel:     bucket,
 		})
 	}
+}
+
+// ObserveExecutedReplacementLaunches records what a successful command actually launched, one
+// observation per replacement NodeClaim, so a 1->N command reports every target it created.
+// The command only succeeds once its replacements are initialized, so the launched NodeClaim
+// carries the instance and capacity type the cloud provider resolved rather than the set of
+// options the simulation considered.
+func ObserveExecutedReplacementLaunches(ctx context.Context, kubeClient client.Reader, cmd Command) {
+	if cmd.Method == nil || len(cmd.Replacements) == 0 {
+		return
+	}
+	fromInstanceType, fromCapacityType := commandSourceTypes(cmd)
+	for _, replacement := range cmd.Replacements {
+		toInstanceType, toCapacityType := replacementLaunchedTypes(ctx, kubeClient, replacement)
+		ConsolidationReplacementLaunchesTotal.Inc(map[string]string{
+			ConsolidationTypeLabel: cmd.ConsolidationType(),
+			metrics.NodePoolLabel:  replacement.NodePoolName,
+			fromInstanceTypeLabel:  fromInstanceType,
+			fromCapacityTypeLabel:  fromCapacityType,
+			toInstanceTypeLabel:    toInstanceType,
+			toCapacityTypeLabel:    toCapacityType,
+		})
+	}
+}
+
+// commandSourceTypes describes the capacity a command removed. A command disrupting several
+// distinct types collapses to multiple so multi-node commands cannot multiply cardinality by
+// the number of type combinations they happen to cover.
+func commandSourceTypes(cmd Command) (instanceType, capacityType string) {
+	instanceTypes := make([]string, 0, len(cmd.Candidates))
+	capacityTypes := make([]string, 0, len(cmd.Candidates))
+	for _, candidate := range cmd.Candidates {
+		instanceTypes = append(instanceTypes, orUnknown(candidateInstanceTypeName(candidate)))
+		capacityTypes = append(capacityTypes, orUnknown(candidate.capacityType))
+	}
+	return collapseTypes(instanceTypes), collapseTypes(capacityTypes)
+}
+
+func collapseTypes(values []string) string {
+	unique := uniqueSorted(values)
+	switch len(unique) {
+	case 0:
+		return unknownTypeValue
+	case 1:
+		return unique[0]
+	default:
+		return multipleTypesValue
+	}
+}
+
+// replacementLaunchedTypes reads the types a replacement launched with from its NodeClaim.
+// The instance type is never inferred from the simulation's options: those routinely number in
+// the hundreds, and recording an option the cloud provider did not pick would both misreport
+// the conversion and make the series unbounded.
+func replacementLaunchedTypes(ctx context.Context, kubeClient client.Reader, replacement *Replacement) (instanceType, capacityType string) {
+	if replacement == nil {
+		return unknownTypeValue, unknownTypeValue
+	}
+	nodeClaim := &v1.NodeClaim{}
+	if replacement.Name != "" && kubeClient.Get(ctx, types.NamespacedName{Name: replacement.Name}, nodeClaim) == nil {
+		instanceType = nodeClaim.Labels[corev1.LabelInstanceTypeStable]
+		capacityType = nodeClaim.Labels[v1.CapacityTypeLabelKey]
+	}
+	if capacityType == "" {
+		// The capacity type requirement is bounded by the capacity types the NodePool allows, so
+		// falling back to it stays low cardinality and still separates spot from on-demand.
+		if requirement := replacement.Requirements.Get(v1.CapacityTypeLabelKey); requirement != nil && requirement.Len() == 1 {
+			capacityType = requirement.Values()[0]
+		}
+	}
+	return orUnknown(instanceType), orUnknown(capacityType)
 }
 
 func ObserveConsolidationReplacementAttempt(consolidationType, nodePool string, replacementCount int) {
