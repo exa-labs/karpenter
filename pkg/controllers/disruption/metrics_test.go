@@ -28,7 +28,7 @@ import (
 )
 
 func TestConsolidationMetricsRecordLabels(t *testing.T) {
-	disruption.ObserveConsolidationCandidateSkip("unit", "unit-pool", "unit-reason")
+	disruption.ObserveConsolidationCandidateSkip("unit", "unit-pool", "unit-type", "spot", "unit-reason")
 	disruption.ObserveConsolidationPass("unit", disruption.PassOutcomeNoOp, 265)
 	disruption.ObserveConsolidationCandidateDepthByNodePool("unit", map[string]int{
 		"unit-pool": 7,
@@ -52,6 +52,8 @@ func TestConsolidationMetricsRecordLabels(t *testing.T) {
 	if !hasMetric(families, "karpenter_voluntary_disruption_consolidation_candidate_skips_total", map[string]string{
 		"consolidation_type": "unit",
 		"nodepool":           "unit-pool",
+		"instance_type":      "unit-type",
+		"capacity_type":      "spot",
 		"reason":             "unit-reason",
 	}) {
 		t.Fatal("candidate skip metric was not recorded with expected labels")
@@ -101,6 +103,26 @@ func TestConsolidationMetricsRecordLabels(t *testing.T) {
 		"reason":             "other-reason",
 	}) {
 		t.Fatal("eligible nodepool metric lost a sibling reason series")
+	}
+}
+
+func TestConsolidationCandidateSkipWithoutAResolvableType(t *testing.T) {
+	// a candidate whose type cannot be resolved still has to be counted, or the reason totals
+	// silently stop matching the pass's own skip count
+	disruption.ObserveConsolidationCandidateSkip("unit", "unit-pool", "", "", "unresolved-reason")
+
+	families, err := crmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasMetric(families, "karpenter_voluntary_disruption_consolidation_candidate_skips_total", map[string]string{
+		"consolidation_type": "unit",
+		"nodepool":           "unit-pool",
+		"instance_type":      "unknown",
+		"capacity_type":      "unknown",
+		"reason":             "unresolved-reason",
+	}) {
+		t.Fatal("candidate skip metric dropped a candidate with an unresolved instance type")
 	}
 }
 

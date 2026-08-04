@@ -189,7 +189,7 @@ func (c *consolidation) computeConsolidationWithOptions(ctx context.Context, sim
 	observeSingleNodeSkip := func(reason string) {
 		if len(candidates) == 1 && !simOpts.silent {
 			// A no-op path that never named itself still gets counted, under the generic reason.
-			ObserveConsolidationCandidateSkip(consolidationType, candidates[0].NodePool.Name, lo.Ternary(reason == "", CandidateSkipNoOp, reason))
+			observeCandidateSkip(consolidationType, candidates[0], lo.Ternary(reason == "", CandidateSkipNoOp, reason))
 		}
 	}
 	var err error
@@ -244,7 +244,7 @@ func (c *consolidation) computeConsolidationWithOptions(ctx context.Context, sim
 	}
 	if len(results.NewNodeClaims) > maxReplacements {
 		if len(candidates) == 1 && !simOpts.silent {
-			ObserveConsolidationCandidateSkip(consolidationType, candidates[0].NodePool.Name, CandidateSkipMultipleReplacements)
+			observeCandidateSkip(consolidationType, candidates[0], CandidateSkipMultipleReplacements)
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Can't remove without creating %d candidates", len(results.NewNodeClaims)))...)
 		}
 		return Command{}, nil

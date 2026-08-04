@@ -332,6 +332,85 @@ var _ = Describe("Consolidation", func() {
 			Entry("when candidates are filtered out due to pod churn", WithUnderutilizedChurn()),
 			Entry("when candidates are filtered out due to candidate being nominated", WithUnderutilizedNodeNomination()),
 		)
+		It("should record the candidate's instance and capacity type on skips", func() {
+			// a pool routinely mixes instance types whose consolidation outcomes differ, so the
+			// nodepool label alone cannot say which shape a skip reason is concentrated in
+			nodePool.Spec.Disruption.Budgets = []v1.Budget{{Nodes: "0"}}
+			rs := test.ReplicaSet()
+			ExpectApplied(ctx, env.Client, rs)
+			Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(rs), rs)).To(Succeed())
+			pod := test.Pod(test.PodOptions{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion:         "apps/v1",
+							Kind:               "ReplicaSet",
+							Name:               rs.Name,
+							UID:                rs.UID,
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
+						},
+					}}})
+			ExpectApplied(ctx, env.Client, rs, pod, node, nodeClaim, nodePool)
+			ExpectManualBinding(ctx, env.Client, pod, node)
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			_, found := FindMetricWithLabelValues("karpenter_voluntary_disruption_consolidation_candidate_skips_total", map[string]string{
+				"consolidation_type":      "single",
+				metrics.NodePoolLabel:     nodePool.Name,
+				"instance_type":           mostExpensiveInstance.Name,
+				metrics.CapacityTypeLabel: mostExpensiveOffering.Requirements.Get(v1.CapacityTypeLabelKey).Any(),
+				"reason":                  disruption.CandidateSkipBudgetExhausted,
+			})
+			Expect(found).To(BeTrue())
+		})
+		It("should record the disrupted and launched types of an executed replacement", func() {
+			rs := test.ReplicaSet()
+			ExpectApplied(ctx, env.Client, rs)
+			Expect(env.Client.Get(ctx, client.ObjectKeyFromObject(rs), rs)).To(Succeed())
+			pod := test.Pod(test.PodOptions{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion:         "apps/v1",
+							Kind:               "ReplicaSet",
+							Name:               rs.Name,
+							UID:                rs.UID,
+							Controller:         new(true),
+							BlockOwnerDeletion: new(true),
+						},
+					}}})
+			ExpectApplied(ctx, env.Client, rs, pod, node, nodeClaim, nodePool)
+			ExpectManualBinding(ctx, env.Client, pod, node)
+			ExpectMakeNodesAndNodeClaimsInitializedAndStateUpdated(ctx, env.Client, env.Clock, nodeStateController, nodeClaimStateController, []*corev1.Node{node}, []*v1.NodeClaim{nodeClaim})
+			ExpectSingletonReconciled(ctx, disruptionController)
+
+			cmds := queue.GetCommands()
+			Expect(cmds).To(HaveLen(1))
+			ExpectMakeNewNodeClaimsReady(ctx, env.Client, env.Clock, cluster, cloudProvider, cmds[0])
+			// the launched type is whatever the provider resolved, not an option the simulation kept
+			launched := &v1.NodeClaim{}
+			Expect(env.Client.Get(ctx, client.ObjectKey{Name: cmds[0].Replacements[0].Name}, launched)).To(Succeed())
+			Expect(launched.Labels[corev1.LabelInstanceTypeStable]).ToNot(BeEmpty())
+			ExpectObjectReconciled(ctx, env.Client, queue, nodeClaim)
+
+			_, found := FindMetricWithLabelValues("karpenter_voluntary_disruption_consolidation_executed_nodes_total", map[string]string{
+				metrics.NodePoolLabel:     nodePool.Name,
+				"decision":                "replace",
+				"instance_type":           mostExpensiveInstance.Name,
+				metrics.CapacityTypeLabel: mostExpensiveOffering.Requirements.Get(v1.CapacityTypeLabelKey).Any(),
+			})
+			Expect(found).To(BeTrue())
+			_, found = FindMetricWithLabelValues("karpenter_voluntary_disruption_consolidation_replacement_launches_total", map[string]string{
+				metrics.NodePoolLabel: nodePool.Name,
+				"from_instance_type":  mostExpensiveInstance.Name,
+				"from_capacity_type":  mostExpensiveOffering.Requirements.Get(v1.CapacityTypeLabelKey).Any(),
+				"to_instance_type":    launched.Labels[corev1.LabelInstanceTypeStable],
+				"to_capacity_type":    launched.Labels[v1.CapacityTypeLabelKey],
+			})
+			Expect(found).To(BeTrue())
+		})
 	})
 	Context("Budgets", func() {
 		var numNodes = 10
