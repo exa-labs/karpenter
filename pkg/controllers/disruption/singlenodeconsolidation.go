@@ -18,6 +18,7 @@ package disruption
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -178,9 +179,16 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 		}
 
 		// compute a possible consolidation option
-		cmd, err := s.computeConsolidation(ctx, candidate)
+		cmd, err := s.computeConsolidationWithinCandidateBudget(ctx, candidate)
 		depth = i + 1
 		if err != nil {
+			// A candidate that ran out of its own budget is abandoned, not an error: the walk
+			// keeps its remaining time for the candidates behind it.
+			if errors.Is(err, errCandidateTimedOut) {
+				observeCandidateSkip(s.ConsolidationType(), candidate, CandidateSkipCandidateTimeout)
+				log.FromContext(ctx).V(1).Info("abandoning consolidation candidate that exceeded its simulation budget", "node", candidate.Name())
+				continue
+			}
 			observeCandidateSkip(s.ConsolidationType(), candidate, CandidateSkipComputeError)
 			log.FromContext(ctx).Error(err, "failed computing consolidation")
 			continue
