@@ -99,6 +99,7 @@ func (c *CensusController) Reconcile(ctx context.Context) (reconciler.Result, er
 	// every actionable node, and capping retries would report candidates the pass would split as
 	// non-actionable. CensusSweepTimeout still bounds what the extra simulations can cost.
 	ctx = WithSplitAttemptBudget(ctx, NewSplitAttemptBudget(len(candidates)))
+	ctx = WithPassReads(ctx, NewPassReads())
 
 	start := c.method.clock.Now()
 	deadline := start.Add(CensusSweepTimeout)

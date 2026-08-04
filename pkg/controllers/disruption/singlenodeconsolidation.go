@@ -90,6 +90,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 	ctx = scheduling.WithNodeClaimTemplateCache(ctx, scheduling.NewNodeClaimTemplateCache())
 	ctx = scheduling.WithTopologyPassCache(ctx, scheduling.NewTopologyPassCache())
 	ctx = WithSplitAttemptBudget(ctx, NewSplitAttemptBudget(options.FromContext(ctx).ConsolidationSplitMaxAttempts))
+	ctx = WithPassReads(ctx, NewPassReads())
 	depth := 0
 	evaluatedCandidateDepthByNodePool := map[string]int{}
 	outcome := PassOutcomeNoOp

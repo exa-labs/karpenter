@@ -75,7 +75,7 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 	// start by getting all pending pods
 	endPodGather := startPassStage(ctx, stagePodGather)
 	defer endPodGather()
-	pods, err := provisioner.GetPendingPods(ctx)
+	pods, err := pendingPodsForPass(ctx, provisioner)
 	if err != nil {
 		return scheduling.Results{}, fmt.Errorf("determining pending pods, %w", err)
 	}
@@ -83,7 +83,7 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 	// Don't provision capacity for pods which will not get evicted due to fully blocking PDBs.
 	// Since Karpenter doesn't know when these pods will be successfully evicted, spinning up capacity until
 	// these pods are evicted is wasteful.
-	pdbs, err := pdb.NewLimits(ctx, kubeClient)
+	pdbs, err := pdbLimitsForPass(ctx, kubeClient)
 	if err != nil {
 		return scheduling.Results{}, fmt.Errorf("tracking PodDisruptionBudgets, %w", err)
 	}
