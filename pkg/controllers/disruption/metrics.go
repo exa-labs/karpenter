@@ -34,6 +34,19 @@ import (
 	"sigs.k8s.io/karpenter/pkg/metrics"
 )
 
+// Disruption metrics measure six distinct populations, and several upstream names read as a
+// verdict when they only record which test a node passed:
+//
+//	managed     every Karpenter-managed node.
+//	candidate   constructible and unblocked for one method. Reported as eligible_nodes.
+//	evaluated   walked by a pass before its timeout. Reported as consolidation_candidate_depth.
+//	actionable  a strictly cheaper delete or replace exists for it. Reported by the census as
+//	            consolidation_actionable_candidates, the only rung that compares prices.
+//	admitted    survived revalidation and entered the queue.
+//	executed    the node is gone. Reported as consolidation_executed_nodes_total.
+//
+// Only executed implies the rungs above it: on production the candidate population routinely
+// exceeds the actionable one by three orders of magnitude.
 const (
 	voluntaryDisruptionSubsystem = "voluntary_disruption"
 	decisionLabel                = "decision"
@@ -48,8 +61,13 @@ const (
 )
 
 const (
-	PassOutcomeCompleted         = "completed"
-	PassOutcomeTimedOut          = "timed_out"
+	PassOutcomeCompleted = "completed"
+	PassOutcomeTimedOut  = "timed_out"
+	// PassOutcomeBudgetConstrained overlays no_op: the pass produced no command and at least one
+	// candidate was skipped for budget. It is an attribution, not a measurement, and a coarse one,
+	// since the outcome carries no NodePool label while budgets are per NodePool and a pass that
+	// skipped one candidate for budget may have skipped hundreds for price. Count
+	// consolidation_candidate_skips_total by NodePool to size the effect.
 	PassOutcomeBudgetConstrained = "budget_constrained"
 	PassOutcomeNoOp              = "no_op"
 	// CandidateSkipBudgetExhausted marks a single-node candidate whose NodePool
@@ -117,6 +135,13 @@ var (
 		},
 		[]string{metrics.NodePoolLabel, decisionLabel, metrics.ReasonLabel, ConsolidationTypeLabel},
 	)
+	// EligibleNodes counts candidates, not nodes worth disrupting: it is set from
+	// len(GetCandidates(...)), so a node is counted once it is constructible and unblocked
+	// (not queued, no PDB or do-not-disrupt violation, labelled with instance type, capacity
+	// type and zone, consolidation enabled on its NodePool). Nothing here compares price, so a
+	// node with no cheaper alternative in the fleet is still "eligible". The upstream name is
+	// kept as-is to stay rebaseable; consolidation_actionable_candidates below is the gauge that
+	// answers "is there anything worth doing".
 	EligibleNodes = opmetrics.NewPrometheusGauge(
 		crmetrics.Registry,
 		prometheus.GaugeOpts{
@@ -177,6 +202,11 @@ var (
 		},
 		[]string{ConsolidationTypeLabel},
 	)
+	// NodePoolAllowedDisruptions is the ceiling the NodePool's spec.disruption.budgets allow,
+	// which is why the CRD says "budget" and the metric says "allowed disruptions" for the same
+	// quantity. Pair it with NodePoolNodesConsumingBudgets (the current spend) to read saturation;
+	// the candidate skip reason budget_exhausted is the per-candidate consequence of the two
+	// meeting, not a third measure of the same thing.
 	NodePoolAllowedDisruptions = opmetrics.NewPrometheusGauge(
 		crmetrics.Registry,
 		prometheus.GaugeOpts{

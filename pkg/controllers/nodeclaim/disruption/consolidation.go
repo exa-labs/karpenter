@@ -30,7 +30,13 @@ import (
 	"sigs.k8s.io/karpenter/pkg/utils/disruption"
 )
 
-// Consolidation is a nodeclaim sub-controller that adds or removes status conditions on empty nodeclaims based on consolidateAfter
+// Consolidation is a nodeclaim sub-controller that adds or removes status conditions on empty nodeclaims based on consolidateAfter.
+//
+// The Consolidatable condition it sets reads as a verdict but is a timer: true means consolidation
+// is enabled on the NodePool, the NodeClaim is initialized, and the consolidateAfter window since
+// the last pod event has elapsed. It says nothing about whether a cheaper node exists, so a fleet
+// can be entirely Consolidatable and have nothing worth consolidating. The disruption controller's
+// census sweep owns that question.
 type Consolidation struct {
 	kubeClient client.Client
 	clock      clock.Clock
