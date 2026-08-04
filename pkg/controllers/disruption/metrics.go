@@ -19,6 +19,7 @@ package disruption
 import (
 	"context"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -324,6 +325,16 @@ var (
 		},
 		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel},
 	)
+	ConsolidationExecutedNodesTotal = opmetrics.NewPrometheusCounter(
+		crmetrics.Registry,
+		prometheus.CounterOpts{
+			Namespace: metrics.Namespace,
+			Subsystem: voluntaryDisruptionSubsystem,
+			Name:      "consolidation_executed_nodes_total",
+			Help:      "Number of nodes disrupted by consolidation commands that executed successfully, by type, NodePool, decision, and the number of replacement NodeClaims the command launched. Counted per disrupted node rather than per command so a multi-node command attributes to each candidate's own NodePool. Compare against consolidation_replacement_attempts_total to see how many simulated multi-replacement options actually execute.",
+		},
+		[]string{ConsolidationTypeLabel, metrics.NodePoolLabel, decisionLabel, replacementCountLabel},
+	)
 	ConsolidationRealizedSavingsDollarsPerHourTotal = opmetrics.NewPrometheusCounter(
 		crmetrics.Registry,
 		prometheus.CounterOpts{
@@ -477,6 +488,38 @@ func ObserveConsolidationCandidateSkip(consolidationType, nodePool, reason strin
 		metrics.NodePoolLabel:  nodePool,
 		reasonLabel:            reason,
 	})
+}
+
+// executedReplacementCountBucket bounds label cardinality while separating the
+// counts a bounded 1->N replacement limit can produce.
+func executedReplacementCountBucket(replacementCount int) string {
+	switch {
+	case replacementCount < 0:
+		return "0"
+	case replacementCount <= 3:
+		return strconv.Itoa(replacementCount)
+	default:
+		return "4+"
+	}
+}
+
+// ObserveExecutedConsolidationCommand records a command that finished
+// successfully as one observation per node it disrupted, so a multi-node
+// command attributes to each candidate's own NodePool instead of having to pick
+// one. The counter is named for that unit: consolidation_executed_nodes_total.
+func ObserveExecutedConsolidationCommand(cmd Command) {
+	if cmd.Method == nil {
+		return
+	}
+	bucket := executedReplacementCountBucket(len(cmd.Replacements))
+	for _, candidate := range cmd.Candidates {
+		ConsolidationExecutedNodesTotal.Inc(map[string]string{
+			ConsolidationTypeLabel: cmd.ConsolidationType(),
+			metrics.NodePoolLabel:  candidate.NodePool.Name,
+			decisionLabel:          string(cmd.Decision()),
+			replacementCountLabel:  bucket,
+		})
+	}
 }
 
 func ObserveConsolidationReplacementAttempt(consolidationType, nodePool string, replacementCount int) {
