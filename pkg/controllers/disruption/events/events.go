@@ -69,6 +69,12 @@ func Terminating(node *corev1.Node, nodeClaim *v1.NodeClaim, reason string) []ev
 
 // Unconsolidatable is an event that informs the user that a NodeClaim/Node combination cannot be consolidated
 // due to the state of the NodeClaim/Node or due to some state of the pods that are scheduled to the NodeClaim/Node
+//
+// The single reason covers two unrelated situations, so the message is the only way to tell them
+// apart: structural exclusions the node can never escape (missing instance type, zone or capacity
+// type label, consolidation disabled on the NodePool, spot-to-spot consolidation disabled) and
+// pricing outcomes that change with the market (no cheaper replacement found for this candidate).
+// consolidation_candidate_skips_total separates the two by reason and is the metric to count.
 func Unconsolidatable(node *corev1.Node, nodeClaim *v1.NodeClaim, msg string) []events.Event {
 	return []events.Event{
 		{

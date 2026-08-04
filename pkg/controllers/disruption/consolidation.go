@@ -188,7 +188,8 @@ func (c *consolidation) computeConsolidationWithOptions(ctx context.Context, sim
 	consolidationType := consolidationTypeFromContext(ctx)
 	observeSingleNodeSkip := func(reason string) {
 		if len(candidates) == 1 && !simOpts.silent {
-			ObserveConsolidationCandidateSkip(consolidationType, candidates[0].NodePool.Name, reason)
+			// A no-op path that never named itself still gets counted, under the generic reason.
+			observeCandidateSkip(consolidationType, candidates[0], lo.Ternary(reason == "", CandidateSkipNoOp, reason))
 		}
 	}
 	var err error
@@ -243,7 +244,7 @@ func (c *consolidation) computeConsolidationWithOptions(ctx context.Context, sim
 	}
 	if len(results.NewNodeClaims) > maxReplacements {
 		if len(candidates) == 1 && !simOpts.silent {
-			ObserveConsolidationCandidateSkip(consolidationType, candidates[0].NodePool.Name, CandidateSkipMultipleReplacements)
+			observeCandidateSkip(consolidationType, candidates[0], CandidateSkipMultipleReplacements)
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Can't remove without creating %d candidates", len(results.NewNodeClaims)))...)
 		}
 		return Command{}, nil
@@ -275,12 +276,12 @@ func (c *consolidation) computeConsolidationWithOptions(ctx context.Context, sim
 		lo.SomeBy(results.NewNodeClaims, func(nc *pscheduling.NodeClaim) bool {
 			return nc.Requirements.Get(v1.CapacityTypeLabelKey).Has(v1.CapacityTypeSpot)
 		}) {
-		cmd, err := c.computeSpotToSpotConsolidation(ctx, candidates, results, replacementPriceBudget, simOpts)
+		cmd, skipReason, err := c.computeSpotToSpotConsolidation(ctx, candidates, results, replacementPriceBudget, simOpts)
 		if err == nil && cmd.Decision() == NoOpDecision {
 			if splitCmd, ok := c.trySplitConsolidation(ctx, simOpts, candidatePrice, candidates); ok {
 				return splitCmd, nil
 			}
-			observeSingleNodeSkip(CandidateSkipNoOp)
+			observeSingleNodeSkip(skipReason)
 		}
 		return cmd, err
 	}
@@ -289,11 +290,11 @@ func (c *consolidation) computeConsolidationWithOptions(ctx context.Context, sim
 	// If we use this directly for spot-to-spot consolidation, we are bound to get repeated consolidations because the strategy that chooses to launch the spot instance from the list does
 	// it based on availability and price which could result in selection/launch of non-lowest priced instance in the list. So, we would keep repeating this loop till we get to lowest priced instance
 	// causing churns and landing onto lower available spot instance ultimately resulting in higher interruptions.
-	if !c.filterReplacementsAndPublish(results.NewNodeClaims, candidates, replacementPriceBudget, !simOpts.silent) {
+	if ok, skipReason := c.filterReplacementsAndPublish(results.NewNodeClaims, candidates, replacementPriceBudget, !simOpts.silent); !ok {
 		if splitCmd, ok := c.trySplitConsolidation(ctx, simOpts, candidatePrice, candidates); ok {
 			return splitCmd, nil
 		}
-		observeSingleNodeSkip(CandidateSkipNoOp)
+		observeSingleNodeSkip(skipReason)
 		return Command{}, nil
 	}
 
@@ -337,8 +338,11 @@ func consolidationSchedulerOptions(newCapacityPriceLimit float64) []pscheduling.
 //     a. There are at least 15 cheapest instance type replacement options to consolidate.
 //     b. The current candidate is NOT part of the first 15 cheapest instance types inorder to avoid repeated consolidation.
 //
+// It returns the skip reason to attribute a no-op command to, so the caller can record why the
+// candidate was passed over rather than that it was.
+//
 // nolint:unparam
-func (c *consolidation) computeSpotToSpotConsolidation(ctx context.Context, candidates []*Candidate, results pscheduling.Results, candidatePrice float64, simOpts consolidationSimulationOptions) (Command, error) {
+func (c *consolidation) computeSpotToSpotConsolidation(ctx context.Context, candidates []*Candidate, results pscheduling.Results, candidatePrice float64, simOpts consolidationSimulationOptions) (Command, string, error) {
 	publishEvents := !simOpts.silent
 
 	// Spot consolidation is turned off.
@@ -346,7 +350,7 @@ func (c *consolidation) computeSpotToSpotConsolidation(ctx context.Context, cand
 		if len(candidates) == 1 && publishEvents {
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, "SpotToSpotConsolidation is disabled, can't replace a spot node with a spot node")...)
 		}
-		return Command{}, nil
+		return Command{}, CandidateSkipSpotToSpotDisabled, nil
 	}
 
 	// Since we are sure that the replacement nodeclaims considered for the spot candidates are spot, we will enforce it through the requirements.
@@ -357,8 +361,8 @@ func (c *consolidation) computeSpotToSpotConsolidation(ctx context.Context, cand
 	}
 
 	// filterByPrice returns the instanceTypes that are lower priced than the current candidate and any error that indicates the input couldn't be filtered.
-	if !c.filterReplacementsAndPublish(results.NewNodeClaims, candidates, candidatePrice, publishEvents) {
-		return Command{}, nil
+	if ok, skipReason := c.filterReplacementsAndPublish(results.NewNodeClaims, candidates, candidatePrice, publishEvents); !ok {
+		return Command{}, skipReason, nil
 	}
 
 	// For multi-node consolidation:
@@ -372,7 +376,7 @@ func (c *consolidation) computeSpotToSpotConsolidation(ctx context.Context, cand
 		}
 		cmd.EmitCandidateEvents(c.recorder)
 
-		return cmd, nil
+		return cmd, "", nil
 	}
 
 	// For single-node consolidation:
@@ -386,7 +390,7 @@ func (c *consolidation) computeSpotToSpotConsolidation(ctx context.Context, cand
 				c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("SpotToSpotConsolidation requires %d cheaper instance type options than the current candidate to consolidate, got %d",
 					MinInstanceTypesForSpotToSpotConsolidation, len(nc.InstanceTypeOptions)))...)
 			}
-			return Command{}, nil
+			return Command{}, CandidateSkipSpotToSpotFlexibility, nil
 		}
 	}
 
@@ -412,27 +416,53 @@ func (c *consolidation) computeSpotToSpotConsolidation(ctx context.Context, cand
 	}
 	cmd.EmitCandidateEvents(c.recorder)
 
-	return cmd, nil
+	return cmd, "", nil
 }
 
 // filterReplacementsAndPublish price-filters the replacement NodeClaims against the candidates' total price and
 // returns whether all replacements still have viable instance type options, publishing an Unconsolidatable event for
 // single-node candidates when they don't and events are enabled (a split fallback retry re-evaluates a candidate the
-// ordinary path already reported on, so it stays silent).
-func (c *consolidation) filterReplacementsAndPublish(newNodeClaims []*pscheduling.NodeClaim, candidates []*Candidate, candidatePrice float64, publishEvents bool) bool {
+// ordinary path already reported on, so it stays silent). The second return value is the skip reason for the
+// rejection, empty when the replacements survive.
+func (c *consolidation) filterReplacementsAndPublish(newNodeClaims []*pscheduling.NodeClaim, candidates []*Candidate, candidatePrice float64, publishEvents bool) (bool, string) {
+	noOptions := func() bool {
+		return lo.SomeBy(newNodeClaims, func(nc *pscheduling.NodeClaim) bool { return len(nc.InstanceTypeOptions) == 0 })
+	}
+	// A replacement that arrives with nothing to price was excluded by its own requirements, not by
+	// the market. Spot-to-spot narrows options to spot-compatible types just before this call, so
+	// pricing an empty claim would report "nothing cheaper exists" for a compatibility failure.
+	if noOptions() {
+		c.publishCantReplace(newNodeClaims, candidates, publishEvents)
+		return false, CandidateSkipNoCompatibleReplacement
+	}
 	if err := filterReplacementsByAggregatePrice(newNodeClaims, candidatePrice); err != nil {
 		if len(candidates) == 1 && publishEvents {
 			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Filtering by price: %v", err))...)
 		}
-		return false
+		// RemoveInstanceTypeOptionsByPriceAndMinValues only errors out of SatisfiesMinValues, and it
+		// reaches that check having kept every option under the ceiling: cheaper capacity exists and
+		// the surviving set is too narrow for minValues.
+		return false, CandidateSkipReplacementFlexibility
 	}
-	if lo.SomeBy(newNodeClaims, func(nc *pscheduling.NodeClaim) bool { return len(nc.InstanceTypeOptions) == 0 }) {
-		if len(candidates) == 1 && publishEvents {
-			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Can't replace with %s", lo.Ternary(len(newNodeClaims) == 1, "a cheaper node", "cheaper nodes")))...)
+	if noOptions() {
+		c.publishCantReplace(newNodeClaims, candidates, publishEvents)
+		// Nothing survived the price ceiling, so the fleet is waiting on cheaper offerings. One
+		// replacement means one node of the candidate's shape fits its pods and no such node is
+		// cheaper, which is what the split fallback exists to serve.
+		if len(newNodeClaims) == 1 {
+			return false, CandidateSkipNoCheaperSingleReplacement
 		}
-		return false
+		return false, CandidateSkipNoCheaperReplacementSet
 	}
-	return true
+	return true, ""
+}
+
+// publishCantReplace reports a single-node candidate that consolidation found no replacement for.
+func (c *consolidation) publishCantReplace(newNodeClaims []*pscheduling.NodeClaim, candidates []*Candidate, publishEvents bool) {
+	if len(candidates) != 1 || !publishEvents {
+		return
+	}
+	c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Can't replace with %s", lo.Ternary(len(newNodeClaims) == 1, "a cheaper node", "cheaper nodes")))...)
 }
 
 // truncateSpotInstanceTypeOptions caps a replacement NodeClaim's instance type options to the 15 cheapest (or the
@@ -453,6 +483,9 @@ func truncateSpotInstanceTypeOptions(nc *pscheduling.NodeClaim) {
 // its cheapest launch price plus an equal share of the surplus budget, so any combination of retained options is
 // guaranteed to sum below candidatePrice. With a single replacement this reduces to the classic
 // RemoveInstanceTypeOptionsByPriceAndMinValues(reqs, candidatePrice) behavior.
+//
+// Claims left with no options are how it reports that nothing is cheaper; the only error it returns is a minValues
+// failure from a claim whose cheaper options were kept.
 func filterReplacementsByAggregatePrice(newNodeClaims []*pscheduling.NodeClaim, candidatePrice float64) error {
 	cheapest := make([]float64, len(newNodeClaims))
 	cheapestTotal := 0.0

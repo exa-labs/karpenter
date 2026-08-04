@@ -18,13 +18,21 @@ package disruption_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/controllers/disruption"
+	pscheduling "sigs.k8s.io/karpenter/pkg/controllers/provisioning/scheduling"
+	"sigs.k8s.io/karpenter/pkg/controllers/state"
+	"sigs.k8s.io/karpenter/pkg/scheduling"
 )
 
 type stubMethod struct {
@@ -107,6 +115,173 @@ func TestObserveExecutedConsolidationCommandRecordsEveryCandidate(t *testing.T) 
 		}) {
 			t.Fatalf("multi-candidate command did not record %s", pool)
 		}
+	}
+}
+
+// stubNodeClaimReader serves the launched NodeClaims a command created, and nothing else, so the
+// launch observer is exercised for both a resolvable and an unresolvable replacement.
+type stubNodeClaimReader struct {
+	nodeClaims map[string]*v1.NodeClaim
+}
+
+func (s stubNodeClaimReader) Get(_ context.Context, key client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+	nodeClaim, ok := s.nodeClaims[key.Name]
+	if !ok {
+		return apierrors.NewNotFound(schema.GroupResource{Resource: "nodeclaims"}, key.Name)
+	}
+	target, ok := obj.(*v1.NodeClaim)
+	if !ok {
+		return fmt.Errorf("unexpected object type %T", obj)
+	}
+	nodeClaim.DeepCopyInto(target)
+	return nil
+}
+
+func (s stubNodeClaimReader) List(context.Context, client.ObjectList, ...client.ListOption) error {
+	return nil
+}
+
+func replacement(name, nodePool string, capacityTypes ...string) *disruption.Replacement {
+	template := pscheduling.NodeClaimTemplate{NodePoolName: nodePool}
+	if len(capacityTypes) > 0 {
+		template.Requirements = scheduling.NewRequirements(scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, capacityTypes...))
+	} else {
+		template.Requirements = scheduling.NewRequirements()
+	}
+	return &disruption.Replacement{
+		NodeClaim: &pscheduling.NodeClaim{NodeClaimTemplate: template},
+		Name:      name,
+	}
+}
+
+// candidateOfType builds a candidate whose node reports an instance type, which is how the
+// observers resolve a candidate the NodePool no longer offers that type from.
+func candidateOfType(nodePool, instanceType string) *disruption.Candidate {
+	candidate := candidateInPool(nodePool)
+	candidate.StateNode = &state.StateNode{Node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{
+		Labels: map[string]string{corev1.LabelInstanceTypeStable: instanceType},
+	}}}
+	return candidate
+}
+
+func launchedNodeClaim(name, instanceType, capacityType string) *v1.NodeClaim {
+	return &v1.NodeClaim{ObjectMeta: metav1.ObjectMeta{
+		Name: name,
+		Labels: map[string]string{
+			corev1.LabelInstanceTypeStable: instanceType,
+			v1.CapacityTypeLabelKey:        capacityType,
+		},
+	}}
+}
+
+func TestObserveExecutedReplacementLaunchesRecordsEveryTarget(t *testing.T) {
+	reader := stubNodeClaimReader{nodeClaims: map[string]*v1.NodeClaim{
+		"launch-a": launchedNodeClaim("launch-a", "small-type", "spot"),
+		"launch-b": launchedNodeClaim("launch-b", "medium-type", "on-demand"),
+	}}
+	disruption.ObserveExecutedReplacementLaunches(context.Background(), reader, disruption.Command{
+		Method:     stubMethod{consolidationType: "launch-unit"},
+		Candidates: []*disruption.Candidate{candidateInPool("launch-pool")},
+		Replacements: []*disruption.Replacement{
+			replacement("launch-a", "launch-pool"),
+			replacement("launch-b", "launch-pool"),
+		},
+	})
+
+	families, err := crmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []struct{ instanceType, capacityType string }{
+		{instanceType: "small-type", capacityType: "spot"},
+		{instanceType: "medium-type", capacityType: "on-demand"},
+	} {
+		if !hasMetric(families, "karpenter_voluntary_disruption_consolidation_replacement_launches_total", map[string]string{
+			"consolidation_type": "launch-unit",
+			"nodepool":           "launch-pool",
+			"to_instance_type":   target.instanceType,
+			"to_capacity_type":   target.capacityType,
+		}) {
+			t.Fatalf("1->N command did not record the %s replacement", target.instanceType)
+		}
+	}
+}
+
+func TestObserveExecutedReplacementLaunchesWithoutALaunchedNodeClaim(t *testing.T) {
+	// an unreadable NodeClaim must not fall back to the simulation's instance type options: they
+	// routinely number in the hundreds, and the provider picked exactly one of them
+	disruption.ObserveExecutedReplacementLaunches(context.Background(), stubNodeClaimReader{}, disruption.Command{
+		Method:       stubMethod{consolidationType: "launch-unknown"},
+		Candidates:   []*disruption.Candidate{candidateInPool("unknown-pool")},
+		Replacements: []*disruption.Replacement{replacement("missing", "unknown-pool", v1.CapacityTypeSpot)},
+	})
+
+	families, err := crmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasMetric(families, "karpenter_voluntary_disruption_consolidation_replacement_launches_total", map[string]string{
+		"consolidation_type": "launch-unknown",
+		"nodepool":           "unknown-pool",
+		"to_instance_type":   "unknown",
+		"to_capacity_type":   v1.CapacityTypeSpot,
+	}) {
+		t.Fatal("a replacement without a readable NodeClaim did not record its requirement's capacity type")
+	}
+}
+
+func TestObserveExecutedReplacementLaunchesCollapsesMixedSources(t *testing.T) {
+	// a multi-node command can disrupt many types; recording every combination it happens to
+	// cover would multiply cardinality by combinations rather than by types
+	disruption.ObserveExecutedReplacementLaunches(context.Background(), stubNodeClaimReader{}, disruption.Command{
+		Method: stubMethod{consolidationType: "launch-mixed"},
+		Candidates: []*disruption.Candidate{
+			candidateOfType("mixed-pool", "small-type"),
+			candidateOfType("mixed-pool", "large-type"),
+		},
+		Replacements: []*disruption.Replacement{replacement("mixed", "mixed-pool")},
+	})
+	disruption.ObserveExecutedReplacementLaunches(context.Background(), stubNodeClaimReader{}, disruption.Command{
+		Method: stubMethod{consolidationType: "launch-uniform"},
+		Candidates: []*disruption.Candidate{
+			candidateOfType("uniform-pool", "small-type"),
+			candidateOfType("uniform-pool", "small-type"),
+		},
+		Replacements: []*disruption.Replacement{replacement("uniform", "uniform-pool")},
+	})
+
+	families, err := crmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasMetric(families, "karpenter_voluntary_disruption_consolidation_replacement_launches_total", map[string]string{
+		"consolidation_type": "launch-mixed",
+		"from_instance_type": "multiple",
+	}) {
+		t.Fatal("a command disrupting several instance types should collapse its source type")
+	}
+	if !hasMetric(families, "karpenter_voluntary_disruption_consolidation_replacement_launches_total", map[string]string{
+		"consolidation_type": "launch-uniform",
+		"from_instance_type": "small-type",
+	}) {
+		t.Fatal("a command disrupting one instance type should record it")
+	}
+}
+
+func TestObserveExecutedReplacementLaunchesIgnoresDeleteCommands(t *testing.T) {
+	disruption.ObserveExecutedReplacementLaunches(context.Background(), stubNodeClaimReader{}, disruption.Command{
+		Method:     stubMethod{consolidationType: "launch-delete"},
+		Candidates: []*disruption.Candidate{candidateInPool("delete-pool")},
+	})
+
+	families, err := crmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasMetric(families, "karpenter_voluntary_disruption_consolidation_replacement_launches_total", map[string]string{
+		"nodepool": "delete-pool",
+	}) {
+		t.Fatal("a delete command should not record a replacement launch")
 	}
 }
 

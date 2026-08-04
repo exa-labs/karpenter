@@ -148,12 +148,12 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 		// Candidates an earlier proposal in this pass already claims cannot be part of a second
 		// command: the queue admits a node to at most one in-flight command.
 		if claimedProviderIDs.Has(candidate.ProviderID()) {
-			ObserveConsolidationCandidateSkip(s.ConsolidationType(), candidate.NodePool.Name, CandidateSkipClaimedByPendingCommand)
+			observeCandidateSkip(s.ConsolidationType(), candidate, CandidateSkipClaimedByPendingCommand)
 			depth = i + 1
 			continue
 		}
 		if balancedNodePoolsHeld.Has(candidate.NodePool.Name) {
-			ObserveConsolidationCandidateSkip(s.ConsolidationType(), candidate.NodePool.Name, CandidateSkipPoolCommandHeld)
+			observeCandidateSkip(s.ConsolidationType(), candidate, CandidateSkipPoolCommandHeld)
 			depth = i + 1
 			continue
 		}
@@ -164,14 +164,14 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 		// from live state before each command is queued and remains authoritative.
 		if disruptionBudgetMapping[candidate.NodePool.Name] == 0 {
 			constrainedByBudgets = true
-			ObserveConsolidationCandidateSkip(s.ConsolidationType(), candidate.NodePool.Name, CandidateSkipBudgetExhausted)
+			observeCandidateSkip(s.ConsolidationType(), candidate, CandidateSkipBudgetExhausted)
 			depth = i + 1
 			continue
 		}
 		// Skip candidates whose best-case score (delete ratio) cannot pass the
 		// threshold. A DELETE is the upper bound; if it fails, no REPLACE will pass.
 		if !s.evaluator.CanPassThreshold(candidate) {
-			ObserveConsolidationCandidateSkip(s.ConsolidationType(), candidate.NodePool.Name, CandidateSkipThreshold)
+			observeCandidateSkip(s.ConsolidationType(), candidate, CandidateSkipThreshold)
 			depth = i + 1
 			continue
 		}
@@ -180,7 +180,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 		cmd, err := s.computeConsolidation(ctx, candidate)
 		depth = i + 1
 		if err != nil {
-			ObserveConsolidationCandidateSkip(s.ConsolidationType(), candidate.NodePool.Name, CandidateSkipComputeError)
+			observeCandidateSkip(s.ConsolidationType(), candidate, CandidateSkipComputeError)
 			log.FromContext(ctx).Error(err, "failed computing consolidation")
 			continue
 		}
@@ -189,7 +189,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 		}
 		// Score the move: Balanced pools may reject; other policies pass through.
 		if approved, _ := s.evaluator.ApproveCommand(ctx, cmd); !approved {
-			ObserveConsolidationCandidateSkip(s.ConsolidationType(), candidate.NodePool.Name, CandidateSkipApprovalRejected)
+			observeCandidateSkip(s.ConsolidationType(), candidate, CandidateSkipApprovalRejected)
 			continue
 		}
 		if maxCommands <= 1 {
@@ -253,9 +253,6 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 
 	s.PreviouslyUnseenNodePools = unseenNodePools
 
-	if constrainedByBudgets {
-		outcome = PassOutcomeBudgetConstrained
-	}
 	return []Command{}, nil
 }
 

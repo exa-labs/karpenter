@@ -28,7 +28,7 @@ import (
 )
 
 func TestConsolidationMetricsRecordLabels(t *testing.T) {
-	disruption.ObserveConsolidationCandidateSkip("unit", "unit-pool", "unit-reason")
+	disruption.ObserveConsolidationCandidateSkip("unit", "unit-pool", "unit-type", "spot", "unit-reason")
 	disruption.ObserveConsolidationPass("unit", disruption.PassOutcomeNoOp, 265)
 	disruption.ObserveConsolidationCandidateDepthByNodePool("unit", map[string]int{
 		"unit-pool": 7,
@@ -36,10 +36,10 @@ func TestConsolidationMetricsRecordLabels(t *testing.T) {
 	disruption.ObserveConsolidationReplacementAttempt("unit", "unit-pool", 0)
 	disruption.ObserveConsolidationReplacementAttempt("unit", "unit-pool", 1)
 	disruption.ObserveConsolidationReplacementAttempt("unit", "unit-pool", 2)
-	disruption.ObserveEligibleNodesByNodePool([]*disruption.Candidate{
+	disruption.ObserveCandidateNodesByNodePool([]*disruption.Candidate{
 		{NodePool: &v1.NodePool{ObjectMeta: metav1.ObjectMeta{Name: "unit-pool"}}},
 	}, "unit-method", "", "unit-reason")
-	disruption.ObserveEligibleNodesByNodePool([]*disruption.Candidate{
+	disruption.ObserveCandidateNodesByNodePool([]*disruption.Candidate{
 		{NodePool: &v1.NodePool{ObjectMeta: metav1.ObjectMeta{Name: "unit-pool"}}},
 	}, "unit-method", "", "other-reason")
 	disruption.ObserveUnseenNodePools("unit", []string{"unseen-pool"})
@@ -52,6 +52,8 @@ func TestConsolidationMetricsRecordLabels(t *testing.T) {
 	if !hasMetric(families, "karpenter_voluntary_disruption_consolidation_candidate_skips_total", map[string]string{
 		"consolidation_type": "unit",
 		"nodepool":           "unit-pool",
+		"instance_type":      "unit-type",
+		"capacity_type":      "spot",
 		"reason":             "unit-reason",
 	}) {
 		t.Fatal("candidate skip metric was not recorded with expected labels")
@@ -88,29 +90,49 @@ func TestConsolidationMetricsRecordLabels(t *testing.T) {
 	}) {
 		t.Fatal("unseen nodepool metric was not recorded")
 	}
-	if !hasMetric(families, "karpenter_voluntary_disruption_eligible_nodes_by_nodepool", map[string]string{
+	if !hasMetric(families, "karpenter_voluntary_disruption_candidate_nodes_by_nodepool", map[string]string{
 		"consolidation_type": "",
 		"nodepool":           "unit-pool",
 		"reason":             "unit-reason",
 	}) {
-		t.Fatal("eligible nodepool metric was not recorded with expected labels")
+		t.Fatal("candidate nodepool metric was not recorded with expected labels")
 	}
-	if !hasMetric(families, "karpenter_voluntary_disruption_eligible_nodes_by_nodepool", map[string]string{
+	if !hasMetric(families, "karpenter_voluntary_disruption_candidate_nodes_by_nodepool", map[string]string{
 		"consolidation_type": "",
 		"nodepool":           "unit-pool",
 		"reason":             "other-reason",
 	}) {
-		t.Fatal("eligible nodepool metric lost a sibling reason series")
+		t.Fatal("candidate nodepool metric lost a sibling reason series")
 	}
 }
 
-func TestEligibleNodesByNodePoolMethodsDoNotCollide(t *testing.T) {
+func TestConsolidationCandidateSkipWithoutAResolvableType(t *testing.T) {
+	// a candidate whose type cannot be resolved still has to be counted, or the reason totals
+	// silently stop matching the pass's own skip count
+	disruption.ObserveConsolidationCandidateSkip("unit", "unit-pool", "", "", "unresolved-reason")
+
+	families, err := crmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasMetric(families, "karpenter_voluntary_disruption_consolidation_candidate_skips_total", map[string]string{
+		"consolidation_type": "unit",
+		"nodepool":           "unit-pool",
+		"instance_type":      "unknown",
+		"capacity_type":      "unknown",
+		"reason":             "unresolved-reason",
+	}) {
+		t.Fatal("candidate skip metric dropped a candidate with an unresolved instance type")
+	}
+}
+
+func TestCandidateNodesByNodePoolMethodsDoNotCollide(t *testing.T) {
 	// StaticDrift and Drift both report reason=drifted with an empty consolidation type over disjoint NodePool
 	// sets; the later pass must not delete or overwrite the earlier pass's series
-	disruption.ObserveEligibleNodesByNodePool([]*disruption.Candidate{
+	disruption.ObserveCandidateNodesByNodePool([]*disruption.Candidate{
 		{NodePool: &v1.NodePool{ObjectMeta: metav1.ObjectMeta{Name: "static-pool"}}},
 	}, "static-drift", "", "drifted")
-	disruption.ObserveEligibleNodesByNodePool([]*disruption.Candidate{
+	disruption.ObserveCandidateNodesByNodePool([]*disruption.Candidate{
 		{NodePool: &v1.NodePool{ObjectMeta: metav1.ObjectMeta{Name: "dynamic-pool"}}},
 	}, "drift", "", "drifted")
 
@@ -118,19 +140,19 @@ func TestEligibleNodesByNodePoolMethodsDoNotCollide(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasMetric(families, "karpenter_voluntary_disruption_eligible_nodes_by_nodepool", map[string]string{
+	if !hasMetric(families, "karpenter_voluntary_disruption_candidate_nodes_by_nodepool", map[string]string{
 		"consolidation_type": "",
 		"nodepool":           "static-pool",
 		"reason":             "drifted",
 	}) {
-		t.Fatal("a later method's pass deleted an earlier method's eligible nodepool series")
+		t.Fatal("a later method's pass deleted an earlier method's candidate nodepool series")
 	}
-	if !hasMetric(families, "karpenter_voluntary_disruption_eligible_nodes_by_nodepool", map[string]string{
+	if !hasMetric(families, "karpenter_voluntary_disruption_candidate_nodes_by_nodepool", map[string]string{
 		"consolidation_type": "",
 		"nodepool":           "dynamic-pool",
 		"reason":             "drifted",
 	}) {
-		t.Fatal("the later method's eligible nodepool series was not recorded")
+		t.Fatal("the later method's candidate nodepool series was not recorded")
 	}
 }
 

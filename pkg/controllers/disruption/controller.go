@@ -191,10 +191,13 @@ func (c *Controller) disrupt(ctx context.Context, disruption Method) (bool, erro
 	if err != nil {
 		return false, fmt.Errorf("determining candidates, %w", err)
 	}
+	// The gauge is named for eligibility but records the candidate population: these nodes
+	// passed construction and this method's ShouldDisrupt predicate, neither of which prices
+	// an alternative. Read consolidation_actionable_candidates for the priced population.
 	EligibleNodes.Set(float64(len(candidates)), map[string]string{
 		metrics.ReasonLabel: strings.ToLower(string(disruption.Reason())),
 	})
-	ObserveEligibleNodesByNodePool(candidates, fmt.Sprintf("%T", disruption), disruption.ConsolidationType(), strings.ToLower(string(disruption.Reason())))
+	ObserveCandidateNodesByNodePool(candidates, fmt.Sprintf("%T", disruption), disruption.ConsolidationType(), strings.ToLower(string(disruption.Reason())))
 
 	// If there are no candidates, move to the next disruption
 	if len(candidates) == 0 {
