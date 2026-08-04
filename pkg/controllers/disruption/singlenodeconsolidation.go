@@ -253,8 +253,12 @@ func (s *SingleNodeConsolidation) admitProposals(ctx context.Context, proposals 
 	// The settling window observes churn in the pass as a whole, so only the first validation
 	// waits it out; the rest inherit the elapsed time, as they do within one multi-node command.
 	validationDelay := commandValidationDelay
+	// The first proposal is always attempted, since a pass has always been allowed to validate
+	// the command it found. Every proposal after it costs another re-simulation, so the reserve
+	// gates them whether or not the attempts before them produced a command.
+	attempted := false
 	for _, proposal := range proposals {
-		if len(admitted) > 0 && !s.clock.Now().Add(commandAdmissionReserve).Before(deadline) {
+		if attempted && !s.clock.Now().Add(commandAdmissionReserve).Before(deadline) {
 			ObserveConsolidationAdmissionFailure(s.ConsolidationType(), AdmissionStageDeadline, "admission_reserve")
 			continue
 		}
@@ -265,6 +269,7 @@ func (s *SingleNodeConsolidation) admitProposals(ctx context.Context, proposals 
 		}
 		_, err := s.validator.Validate(ctx, proposal.cmd, validationDelay)
 		validationDelay = 0
+		attempted = true
 		if err != nil {
 			if !IsValidationError(err) {
 				return admitted, fmt.Errorf("validating consolidation, %w", err)

@@ -304,6 +304,21 @@ var _ = Describe("Batched Single-Node Consolidation", func() {
 		Expect(admissionFailures(disruption.AdmissionStageDeadline, "admission_reserve")).To(Equal(skipped + 2))
 	})
 
+	It("spends its admission reserve on attempts, not on admissions", func() {
+		disruption.SingleNodeConsolidationTimeoutDuration = 5 * time.Second
+		applyNodes(4, "1")
+		validator.errs = []error{disruption.NewSchedulingValidationError(errors.New("stale plan"))}
+		skipped := admissionFailures(disruption.AdmissionStageDeadline, "admission_reserve")
+
+		cmds, err := singleNode.ComputeCommands(ctx, map[string]int{nodePool.Name: 100}, candidatesFor(singleNode)...)
+		Expect(err).To(Succeed())
+		Expect(cmds).To(BeEmpty())
+		// A rejected attempt costs a re-simulation too, so it consumes the pass's one attempt
+		// past the deadline rather than letting every remaining proposal validate for free.
+		Expect(validator.calls).To(Equal(1))
+		Expect(admissionFailures(disruption.AdmissionStageDeadline, "admission_reserve")).To(Equal(skipped + 2))
+	})
+
 	It("rejects a proposal whose headroom an earlier command in the same pass consumed", func() {
 		// Two loaded nodes and one node with room for exactly one of their pods. Consolidating
 		// either is valid on its own; consolidating both is not, and the second proposal is
