@@ -49,6 +49,7 @@ func TestReplacementsAttributableToDisruption(t *testing.T) {
 		name      string
 		claims    []*scheduling.NodeClaim
 		disrupted sets.Set[types.UID]
+		withheld  bool
 		want      []*scheduling.NodeClaim
 	}{
 		{
@@ -85,16 +86,35 @@ func TestReplacementsAttributableToDisruption(t *testing.T) {
 			want:      []*scheduling.NodeClaim{forDeletingNode},
 		},
 		{
-			// Every pod was withheld from the simulation, so nothing is attributable and the
-			// unattributed behavior stands rather than becoming a delete.
-			name:      "no disrupted pods leaves the result alone",
+			// The candidate had pods and a PDB withheld all of them, so nothing of the candidate's
+			// reached the simulation and the unattributed behavior stands rather than becoming a
+			// delete of a node whose pods were never placed.
+			name:      "withheld candidate pods leave the result alone",
 			claims:    []*scheduling.NodeClaim{forBacklog},
 			disrupted: sets.New[types.UID](),
+			withheld:  true,
 			want:      []*scheduling.NodeClaim{forBacklog},
+		},
+		{
+			// The same shape from the rest of the fleet must not stand in for it: a churning cluster
+			// always has pods on deleting nodes, and that says nothing about what the candidate
+			// contributed.
+			name:      "deleting-node pods elsewhere do not stand in for the candidate's",
+			claims:    []*scheduling.NodeClaim{forBacklog},
+			disrupted: sets.New[types.UID]("on-deleting-node"),
+			want:      nil,
+		},
+		{
+			// An empty candidate has nothing to reschedule, so the backlog's claims are not its own
+			// either and the command stays the delete it already was.
+			name:      "an empty candidate drops the backlog's claims",
+			claims:    []*scheduling.NodeClaim{forBacklog},
+			disrupted: sets.New[types.UID](),
+			want:      nil,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := replacementsAttributableToDisruption(tc.claims, tc.disrupted)
+			got := replacementsAttributableToDisruption(tc.claims, tc.disrupted, tc.withheld)
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %d claims, want %d", len(got), len(tc.want))
 			}
@@ -102,6 +122,49 @@ func TestReplacementsAttributableToDisruption(t *testing.T) {
 				if got[i] != tc.want[i] {
 					t.Fatalf("claim %d: got %v, want %v", i, got[i].Pods, tc.want[i].Pods)
 				}
+			}
+		})
+	}
+}
+
+func TestCandidatePodsWithheld(t *testing.T) {
+	pod, otherPod := podWithUID("pod"), podWithUID("other-pod")
+	loaded := &Candidate{reschedulablePods: []*corev1.Pod{pod}}
+	otherLoaded := &Candidate{reschedulablePods: []*corev1.Pod{otherPod}}
+	empty := &Candidate{}
+
+	for _, tc := range []struct {
+		name          string
+		candidates    []*Candidate
+		candidatePods []*corev1.Pod
+		want          bool
+	}{
+		{
+			// A PDB that allows no disruption right now takes every pod out of the simulation, so
+			// the candidate is not represented in the result at all.
+			name:       "a loaded candidate that contributed nothing",
+			candidates: []*Candidate{loaded},
+			want:       true,
+		},
+		{
+			name:          "a loaded candidate that contributed its pods",
+			candidates:    []*Candidate{loaded},
+			candidatePods: []*corev1.Pod{pod},
+		},
+		{
+			// Nothing was withheld: the candidate has nothing to reschedule.
+			name:       "an empty candidate",
+			candidates: []*Candidate{empty},
+		},
+		{
+			name:       "a batch whose loaded candidate contributed nothing",
+			candidates: []*Candidate{empty, otherLoaded},
+			want:       true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := candidatePodsWithheld(tc.candidates, tc.candidatePods); got != tc.want {
+				t.Fatalf("got %t, want %t", got, tc.want)
 			}
 		})
 	}

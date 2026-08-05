@@ -160,7 +160,7 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 	// so a claim it did not cause distorts the decision. Drift and the other methods replace their
 	// candidate whatever the simulation costs, so they keep the unattributed contract.
 	if consolidationTypeFromContext(ctx) != "" && options.FromContext(ctx).ConsolidationAttributeReplacements {
-		results.NewNodeClaims = replacementsAttributableToDisruption(results.NewNodeClaims, deletingPodUIDs)
+		results.NewNodeClaims = replacementsAttributableToDisruption(results.NewNodeClaims, deletingPodUIDs, candidatePodsWithheld(candidates, candidatePods))
 	}
 	for _, n := range results.ExistingNodes {
 		// We consider existing nodes for scheduling. When these nodes are unmanaged, their taint logic should
@@ -209,17 +209,30 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 // marked for deletion. Excluding them lets a later proposal spend capacity an earlier command in
 // the same pass already claimed.
 //
-// A simulation with no disrupted pods at all is left alone rather than reduced to a delete. Nothing
-// there is attributable either, but that shape means the candidate's pods were all withheld from
-// the simulation (a fully blocking PDB), and turning that into a delete is a change this is not
-// making.
-func replacementsAttributableToDisruption(newNodeClaims []*scheduling.NodeClaim, disruptedPodUIDs sets.Set[types.UID]) []*scheduling.NodeClaim {
-	if len(newNodeClaims) == 0 || disruptedPodUIDs.Len() == 0 {
+// A simulation whose candidates had pods but contributed none of them is left alone rather than
+// reduced to a delete. Nothing there is attributable either, but that shape means the pods were
+// withheld from the simulation by a PDB that currently allows no disruption, and turning that into
+// a delete of a node the simulation never placed pods for is a change this is not making. An empty
+// candidate is not that shape: it has nothing to reschedule, so dropping the backlog's claims
+// leaves the delete it already was.
+func replacementsAttributableToDisruption(newNodeClaims []*scheduling.NodeClaim, disruptedPodUIDs sets.Set[types.UID], podsWithheld bool) []*scheduling.NodeClaim {
+	if len(newNodeClaims) == 0 || podsWithheld {
 		return newNodeClaims
 	}
 	return lo.Filter(newNodeClaims, func(nc *scheduling.NodeClaim, _ int) bool {
 		return lo.SomeBy(nc.Pods, func(p *corev1.Pod) bool { return disruptedPodUIDs.Has(p.UID) })
 	})
+}
+
+// candidatePodsWithheld reports whether the candidates hold reschedulable pods that no longer
+// reached the simulation, which happens when their PDBs currently allow no disruption.
+//
+// The disrupted set the filter runs against also holds every pod on an already-deleting node
+// cluster-wide, so it is non-empty in a churning cluster whatever the candidate contributed. Asking
+// the candidates directly keeps the escape hatch about the candidate, not about the rest of the
+// fleet.
+func candidatePodsWithheld(candidates []*Candidate, candidatePods []*corev1.Pod) bool {
+	return len(candidatePods) == 0 && lo.SomeBy(candidates, func(c *Candidate) bool { return len(c.reschedulablePods) > 0 })
 }
 
 // UninitializedNodeError tracks a special pod error for disruption where pods schedule to a node
