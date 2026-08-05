@@ -37,11 +37,13 @@ func claimWith(pods ...*corev1.Pod) *scheduling.NodeClaim {
 
 func TestReplacementsAttributableToDisruption(t *testing.T) {
 	candidatePod, otherCandidatePod, backlogPod := podWithUID("candidate"), podWithUID("candidate-2"), podWithUID("backlog")
+	onDeletingNodePod := podWithUID("on-deleting-node")
 	disrupted := sets.New[types.UID]("candidate", "candidate-2")
 
 	forCandidate := claimWith(candidatePod)
 	forBacklog := claimWith(backlogPod)
 	mixed := claimWith(backlogPod, otherCandidatePod)
+	forDeletingNode := claimWith(onDeletingNodePod)
 
 	for _, tc := range []struct {
 		name      string
@@ -70,6 +72,17 @@ func TestReplacementsAttributableToDisruption(t *testing.T) {
 			claims:    []*scheduling.NodeClaim{mixed},
 			disrupted: disrupted,
 			want:      []*scheduling.NodeClaim{mixed},
+		},
+		{
+			// Pods on already-deleting nodes are in the disrupted set, so a claim opened for them
+			// is kept. They look like backlog but nothing else owns them yet, and a pass admitting
+			// several commands re-simulates each proposal against the nodes the earlier ones just
+			// marked for deletion: dropping their claim lets a later proposal spend capacity an
+			// earlier command already took.
+			name:      "a claim for pods on an already-deleting node is kept",
+			claims:    []*scheduling.NodeClaim{forDeletingNode},
+			disrupted: sets.New[types.UID]("candidate", "candidate-2", "on-deleting-node"),
+			want:      []*scheduling.NodeClaim{forDeletingNode},
 		},
 		{
 			// Every pod was withheld from the simulation, so nothing is attributable and the

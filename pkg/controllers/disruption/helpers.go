@@ -200,6 +200,12 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 // the disruption still needs it. Dropping a backlog-only claim does not strand its pods, which stay
 // pending for the provisioning loop that owns them.
 //
+// Pods on already-deleting nodes count as disrupted here even though another decision evicted them.
+// They are not backlog: no provisioning loop owns them until they are actually evicted, and a pass
+// that admits several commands re-simulates each proposal against the nodes the earlier ones just
+// marked for deletion. Excluding them lets a later proposal spend capacity an earlier command in
+// the same pass already claimed.
+//
 // A simulation with no disrupted pods at all is left alone rather than reduced to a delete. Nothing
 // there is attributable either, but that shape means the candidate's pods were all withheld from
 // the simulation (a fully blocking PDB), and turning that into a delete is a change this is not

@@ -292,9 +292,11 @@ func (s *SingleNodeConsolidation) admitProposals(ctx context.Context, proposals 
 			continue
 		}
 		if validationDelay == 0 {
-			// The validator only drops topology reads pinned earlier in the pass when it waits.
-			// Commands admitted before this one moved pods, so drop them here as well.
+			// The validator only drops pass-scoped reads when it waits. Commands admitted before
+			// this one moved pods and launched replacements, so drop them here as well: this
+			// proposal has to be judged against the cluster those commands left behind.
 			ctx = scheduling.WithTopologyPassCache(ctx, scheduling.NewTopologyPassCache())
+			ctx = WithPassReads(ctx, NewPassReads())
 		}
 		_, err := s.validator.Validate(ctx, proposal.cmd, validationDelay)
 		validationDelay = 0
