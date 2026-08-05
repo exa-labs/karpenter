@@ -183,6 +183,40 @@ func (c *consolidation) computeConsolidation(ctx context.Context, candidates ...
 	return c.computeConsolidationWithOptions(ctx, consolidationSimulationOptions{}, candidates...)
 }
 
+// errCandidateTimedOut reports a candidate abandoned by its own budget rather than by a failure.
+var errCandidateTimedOut = errors.New("candidate simulation exceeded its budget")
+
+// computeConsolidationWithinCandidateBudget evaluates one candidate under a deadline of its own.
+//
+// The pass timeout bounds discovery in aggregate, which leaves one pathological candidate free to
+// spend the entire pass: a pass that hits its timeout mid-walk holding nothing returns nothing at
+// all. Bounding each candidate makes the failure mode "this pass found fewer commands" rather than
+// "this pass found none".
+//
+// The scheduler honors cancellation between pods, so an abandoned simulation stops promptly and
+// its partial results are discarded rather than read as a verdict.
+func (c *consolidation) computeConsolidationWithinCandidateBudget(ctx context.Context, candidate *Candidate) (Command, error) {
+	budget := options.FromContext(ctx).ConsolidationCandidateTimeout
+	if budget <= 0 {
+		return c.computeConsolidation(ctx, candidate)
+	}
+	candidateCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	cmd, err := c.computeConsolidation(candidateCtx, candidate)
+	if candidateBudgetExhausted(candidateCtx.Err(), ctx.Err()) {
+		return Command{}, errCandidateTimedOut
+	}
+	return cmd, err
+}
+
+// candidateBudgetExhausted reports whether a finished simulation should be discarded because the
+// candidate ran out of its own budget, rather than because the pass is shutting down. A canceled
+// solve returns whatever it had placed so far, so an exhausted budget invalidates the result even
+// when the simulation itself reported no error.
+func candidateBudgetExhausted(candidateErr, parentErr error) bool {
+	return candidateErr != nil && parentErr == nil
+}
+
 // nolint:gocyclo
 func (c *consolidation) computeConsolidationWithOptions(ctx context.Context, simOpts consolidationSimulationOptions, candidates ...*Candidate) (Command, error) {
 	consolidationType := consolidationTypeFromContext(ctx)

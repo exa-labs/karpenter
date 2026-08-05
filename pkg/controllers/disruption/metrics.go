@@ -132,6 +132,10 @@ const (
 	// proposal in this pass. Balanced scoring uses NodePool totals computed once per pass, so
 	// a second move in the same pool would be scored against totals the first move invalidates.
 	CandidateSkipPoolCommandHeld = "pool_command_held"
+	// CandidateSkipCandidateTimeout marks a candidate whose simulation exceeded
+	// ConsolidationCandidateTimeout and was abandoned so the walk could continue. It is the
+	// per-candidate counterpart of a timed-out pass: the pass survives, this candidate does not.
+	CandidateSkipCandidateTimeout = "candidate_timed_out"
 )
 
 const (
