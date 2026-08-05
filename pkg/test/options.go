@@ -55,6 +55,7 @@ type OptionsFields struct {
 	ConsolidationSplitFallback       *bool
 	ConsolidationSplitMaxAttempts    *int
 	ConsolidationSplitMinSavings     *float64
+	NodeClaimInitializationTimeout   *time.Duration
 	FeatureGates                     FeatureGates
 }
 
@@ -101,6 +102,7 @@ func Options(overrides ...OptionsFields) *options.Options {
 		ConsolidationSplitFallback:       lo.FromPtrOr(opts.ConsolidationSplitFallback, false),
 		ConsolidationSplitMaxAttempts:    lo.FromPtrOr(opts.ConsolidationSplitMaxAttempts, 50),
 		ConsolidationSplitMinSavings:     lo.FromPtrOr(opts.ConsolidationSplitMinSavings, 0.05),
+		NodeClaimInitializationTimeout:   lo.FromPtrOr(opts.NodeClaimInitializationTimeout, 0),
 		FeatureGates: options.FeatureGates{
 			NodeRepair:              lo.FromPtrOr(opts.FeatureGates.NodeRepair, false),
 			ReservedCapacity:        lo.FromPtrOr(opts.FeatureGates.ReservedCapacity, true),

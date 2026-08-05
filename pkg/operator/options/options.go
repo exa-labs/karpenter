@@ -95,6 +95,7 @@ type Options struct {
 	ConsolidationSplitFallback       bool
 	ConsolidationSplitMaxAttempts    int
 	ConsolidationSplitMinSavings     float64
+	NodeClaimInitializationTimeout   time.Duration
 	FeatureGates                     FeatureGates
 }
 
@@ -142,6 +143,7 @@ func (o *Options) AddFlags(fs *FlagSet) {
 	fs.BoolVarWithEnv(&o.ConsolidationSplitFallback, "consolidation-split-fallback", "CONSOLIDATION_SPLIT_FALLBACK", false, "When set, a single-node consolidation candidate that no cheaper single replacement can absorb is re-simulated with the candidate's own price as a ceiling on new capacity, so the scheduler packs its pods onto several cheaper nodes instead. Bounded by max-consolidation-replacements and consolidation-split-max-attempts.")
 	fs.IntVar(&o.ConsolidationSplitMaxAttempts, "consolidation-split-max-attempts", env.WithDefaultInt("CONSOLIDATION_SPLIT_MAX_ATTEMPTS", 50), "The maximum number of split fallback simulations a single consolidation pass may run. Each attempt costs an extra scheduling simulation, so this caps how much of the pass timeout the fallback can consume at the expense of candidate traversal depth. 0 disables the fallback.")
 	fs.Float64Var(&o.ConsolidationSplitMinSavings, "consolidation-split-min-savings", env.WithDefaultFloat64("CONSOLIDATION_SPLIT_MIN_SAVINGS", 0.05), "The fraction of a candidate's price that a split replacement must save before it is accepted, on top of the usual cheaper-than-candidate check. Guards against churning a node into several nodes for a negligible price difference.")
+	fs.DurationVar(&o.NodeClaimInitializationTimeout, "nodeclaim-initialization-timeout", env.WithDefaultDuration("NODECLAIM_INITIALIZATION_TIMEOUT", 0), "The maximum time a registered NodeClaim may stay uninitialized before it is deleted. Registration only means the kubelet joined; a node whose startup taints are never removed, or whose requested extended resources never appear, stays registered and uninitialized indefinitely, holding an instance that runs no workload and that disruption still models with its full capacity. 0 disables the timeout.")
 	fs.BoolVarWithEnv(&o.IgnoreDRARequests, "ignore-dra-requests", "IGNORE_DRA_REQUESTS", true, "When set, Karpenter will ignore pods' DRA requests during scheduling simulations. NOTE: This flag will be removed once formal DRA support is GA in Karpenter.")
 	fs.StringVar(&o.FeatureGates.inputStr, "feature-gates", env.WithDefaultString("FEATURE_GATES", "NodeRepair=false,ReservedCapacity=true,SpotToSpotConsolidation=false,NodeOverlay=false,StaticCapacity=false,CapacityBuffer=false"), "Optional features can be enabled / disabled using feature gates. Current options are: NodeRepair, ReservedCapacity, SpotToSpotConsolidation, NodeOverlay, StaticCapacity, and CapacityBuffer.")
 }
@@ -167,6 +169,9 @@ func (o *Options) Parse(fs *FlagSet, args ...string) error {
 	}
 	if err := o.validateConsolidation(); err != nil {
 		return err
+	}
+	if o.NodeClaimInitializationTimeout < 0 {
+		return fmt.Errorf("validating cli flags / env vars, NODECLAIM_INITIALIZATION_TIMEOUT must be >= 0, got %s", o.NodeClaimInitializationTimeout)
 	}
 	gates, err := ParseFeatureGates(o.FeatureGates.inputStr)
 	if err != nil {
