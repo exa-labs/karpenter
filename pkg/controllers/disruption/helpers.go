@@ -156,7 +156,10 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 		})
 	}
 	results = results.TruncateInstanceTypes(ctx, scheduling.MaxInstanceTypes)
-	if options.FromContext(ctx).ConsolidationAttributeReplacements {
+	// Consolidation prices its command from this slice and counts it against the replacement bound,
+	// so a claim it did not cause distorts the decision. Drift and the other methods replace their
+	// candidate whatever the simulation costs, so they keep the unattributed contract.
+	if consolidationTypeFromContext(ctx) != "" && options.FromContext(ctx).ConsolidationAttributeReplacements {
 		results.NewNodeClaims = replacementsAttributableToDisruption(results.NewNodeClaims, deletingPodUIDs)
 	}
 	for _, n := range results.ExistingNodes {

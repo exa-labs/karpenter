@@ -18,7 +18,6 @@ package disruption
 
 import (
 	"context"
-	"errors"
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
@@ -30,6 +29,11 @@ import (
 
 // PassReads memoizes the cluster-wide reads a consolidation simulation makes that do not vary
 // with the candidate under test: the pending pod backlog and the PodDisruptionBudget limits.
+//
+// Only answers are memoized, never failures. A failed read belongs to the candidate that happened
+// to reach it first - an expired candidate deadline, a momentary apiserver error - and caching it
+// would hand that candidate's bad luck to every later candidate in the pass. The next caller reads
+// again, exactly as every candidate did before the reads were shared.
 //
 // A pass evaluates hundreds of candidates and asks each one the same question about the rest of
 // the cluster. Re-reading the backlog per candidate multiplies a pass-level constant by the
@@ -46,11 +50,9 @@ type PassReads struct {
 	mu sync.Mutex
 
 	backlog    []*corev1.Pod
-	backlogErr error
 	backlogSet bool
 
 	pdbs    pdb.Limits
-	pdbsErr error
 	pdbsSet bool
 }
 
@@ -78,13 +80,10 @@ func (r *PassReads) pendingPods(read func() ([]*corev1.Pod, error)) ([]*corev1.P
 	defer r.mu.Unlock()
 	if !r.backlogSet {
 		backlog, err := read()
-		if readAbandoned(err) {
+		if err != nil {
 			return nil, err
 		}
-		r.backlog, r.backlogErr, r.backlogSet = backlog, err, true
-	}
-	if r.backlogErr != nil {
-		return nil, r.backlogErr
+		r.backlog, r.backlogSet = backlog, true
 	}
 	out := make([]*corev1.Pod, len(r.backlog))
 	copy(out, r.backlog)
@@ -97,20 +96,12 @@ func (r *PassReads) pdbLimits(read func() (pdb.Limits, error)) (pdb.Limits, erro
 	defer r.mu.Unlock()
 	if !r.pdbsSet {
 		pdbs, err := read()
-		if readAbandoned(err) {
+		if err != nil {
 			return nil, err
 		}
-		r.pdbs, r.pdbsErr, r.pdbsSet = pdbs, err, true
+		r.pdbs, r.pdbsSet = pdbs, true
 	}
-	return r.pdbs, r.pdbsErr
-}
-
-// readAbandoned reports whether a read ended with its caller rather than with a failure of the
-// read itself. Whichever candidate reaches a read first performs it under that candidate's
-// deadline, so memoizing this class of error would hand one candidate's timeout to every later
-// candidate in the pass and cost the pass every command it had left to find.
-func readAbandoned(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+	return r.pdbs, nil
 }
 
 // pendingPodsForPass returns the pass's pending pod backlog, reading it once per pass. A caller

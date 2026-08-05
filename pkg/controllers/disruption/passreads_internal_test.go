@@ -88,20 +88,28 @@ func TestPassReadsPendingPodsAppendDoesNotLeak(t *testing.T) {
 	}
 }
 
-func TestPassReadsPendingPodsMemoizesError(t *testing.T) {
+// A failed read belongs to the candidate that hit it, not to the pass. Before the reads were
+// shared every candidate listed for itself, so a momentary apiserver error cost one candidate;
+// caching the failure would cost every candidate left in the walk.
+func TestPassReadsDoesNotMemoizeAFailedRead(t *testing.T) {
 	reads := NewPassReads()
 	calls := 0
 	read := func() ([]*corev1.Pod, error) {
 		calls++
-		return nil, fmt.Errorf("listing pods")
-	}
-	for range 3 {
-		if _, err := reads.pendingPods(read); err == nil {
-			t.Fatal("expected the read error to be returned")
+		if calls == 1 {
+			return nil, fmt.Errorf("listing pods")
 		}
+		return []*corev1.Pod{testPod("a")}, nil
 	}
-	if calls != 1 {
-		t.Fatalf("expected a failed read not to be retried per candidate, got %d reads", calls)
+	if _, err := reads.pendingPods(read); err == nil {
+		t.Fatal("expected the read error to be returned")
+	}
+	pods, err := reads.pendingPods(read)
+	if err != nil {
+		t.Fatalf("expected the next candidate to retry the read, got %v", err)
+	}
+	if len(pods) != 1 {
+		t.Fatalf("expected the retried read's backlog, got %d pods", len(pods))
 	}
 }
 
