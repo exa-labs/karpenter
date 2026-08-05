@@ -18,12 +18,15 @@ package disruption
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"sigs.k8s.io/karpenter/pkg/utils/pdb"
 )
 
 func testPod(name string) *corev1.Pod {
@@ -99,6 +102,51 @@ func TestPassReadsPendingPodsMemoizesError(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("expected a failed read not to be retried per candidate, got %d reads", calls)
+	}
+}
+
+// The candidate that happens to reach the read first performs it under its own deadline. Caching
+// that candidate's expiry would answer every later candidate with it, so the pass would lose the
+// commands the per-candidate bound exists to preserve.
+func TestPassReadsDoesNotMemoizeAnAbandonedRead(t *testing.T) {
+	reads := NewPassReads()
+	calls := 0
+	read := func() ([]*corev1.Pod, error) {
+		calls++
+		if calls == 1 {
+			return nil, fmt.Errorf("determining pending pods: %w", context.DeadlineExceeded)
+		}
+		return []*corev1.Pod{testPod("a")}, nil
+	}
+
+	if _, err := reads.pendingPods(read); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected the first candidate to see its own deadline, got %v", err)
+	}
+	pods, err := reads.pendingPods(read)
+	if err != nil {
+		t.Fatalf("expected the next candidate to retry the read, got %v", err)
+	}
+	if len(pods) != 1 {
+		t.Fatalf("expected the retried read's backlog, got %d pods", len(pods))
+	}
+}
+
+func TestPassReadsDoesNotMemoizeAnAbandonedPDBRead(t *testing.T) {
+	reads := NewPassReads()
+	calls := 0
+	read := func() (pdb.Limits, error) {
+		calls++
+		if calls == 1 {
+			return nil, fmt.Errorf("tracking pod disruption budgets: %w", context.Canceled)
+		}
+		return pdb.Limits{}, nil
+	}
+
+	if _, err := reads.pdbLimits(read); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected the first candidate to see its own cancellation, got %v", err)
+	}
+	if _, err := reads.pdbLimits(read); err != nil {
+		t.Fatalf("expected the next candidate to retry the read, got %v", err)
 	}
 }
 

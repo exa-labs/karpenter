@@ -18,6 +18,7 @@ package disruption
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
@@ -38,8 +39,9 @@ import (
 //
 // Memoizing also makes a pass internally consistent. Candidates are selected and sorted from one
 // snapshot; reading a newer backlog for each of them means later candidates are judged against a
-// cluster the ordering never saw. Live state remains authoritative where it matters: validation
-// recomputes from it before any command is queued.
+// cluster the ordering never saw. Live state remains authoritative where it matters: a validator
+// that waits out a settling window installs its own PassReads, so the re-simulation that admits a
+// command reads the backlog and the budgets as they are after the wait, not as discovery saw them.
 type PassReads struct {
 	mu sync.Mutex
 
@@ -75,8 +77,11 @@ func (r *PassReads) pendingPods(read func() ([]*corev1.Pod, error)) ([]*corev1.P
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.backlogSet {
-		r.backlog, r.backlogErr = read()
-		r.backlogSet = true
+		backlog, err := read()
+		if readAbandoned(err) {
+			return nil, err
+		}
+		r.backlog, r.backlogErr, r.backlogSet = backlog, err, true
 	}
 	if r.backlogErr != nil {
 		return nil, r.backlogErr
@@ -91,10 +96,21 @@ func (r *PassReads) pdbLimits(read func() (pdb.Limits, error)) (pdb.Limits, erro
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.pdbsSet {
-		r.pdbs, r.pdbsErr = read()
-		r.pdbsSet = true
+		pdbs, err := read()
+		if readAbandoned(err) {
+			return nil, err
+		}
+		r.pdbs, r.pdbsErr, r.pdbsSet = pdbs, err, true
 	}
 	return r.pdbs, r.pdbsErr
+}
+
+// readAbandoned reports whether a read ended with its caller rather than with a failure of the
+// read itself. Whichever candidate reaches a read first performs it under that candidate's
+// deadline, so memoizing this class of error would hand one candidate's timeout to every later
+// candidate in the pass and cost the pass every command it had left to find.
+func readAbandoned(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // pendingPodsForPass returns the pass's pending pod backlog, reading it once per pass. A caller
