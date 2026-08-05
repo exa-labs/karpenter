@@ -18,6 +18,7 @@ package disruption
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -90,6 +91,7 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 	ctx = scheduling.WithNodeClaimTemplateCache(ctx, scheduling.NewNodeClaimTemplateCache())
 	ctx = scheduling.WithTopologyPassCache(ctx, scheduling.NewTopologyPassCache())
 	ctx = WithSplitAttemptBudget(ctx, NewSplitAttemptBudget(options.FromContext(ctx).ConsolidationSplitMaxAttempts))
+	ctx = WithPassReads(ctx, NewPassReads())
 	depth := 0
 	evaluatedCandidateDepthByNodePool := map[string]int{}
 	outcome := PassOutcomeNoOp
@@ -177,9 +179,16 @@ func (s *SingleNodeConsolidation) ComputeCommands(ctx context.Context, disruptio
 		}
 
 		// compute a possible consolidation option
-		cmd, err := s.computeConsolidation(ctx, candidate)
+		cmd, err := s.computeConsolidationWithinCandidateBudget(ctx, candidate)
 		depth = i + 1
 		if err != nil {
+			// A candidate that ran out of its own budget is abandoned, not an error: the walk
+			// keeps its remaining time for the candidates behind it.
+			if errors.Is(err, errCandidateTimedOut) {
+				observeCandidateSkip(s.ConsolidationType(), candidate, CandidateSkipCandidateTimeout)
+				log.FromContext(ctx).V(1).Info("abandoning consolidation candidate that exceeded its simulation budget", "node", candidate.Name())
+				continue
+			}
 			observeCandidateSkip(s.ConsolidationType(), candidate, CandidateSkipComputeError)
 			log.FromContext(ctx).Error(err, "failed computing consolidation")
 			continue
@@ -283,9 +292,11 @@ func (s *SingleNodeConsolidation) admitProposals(ctx context.Context, proposals 
 			continue
 		}
 		if validationDelay == 0 {
-			// The validator only drops topology reads pinned earlier in the pass when it waits.
-			// Commands admitted before this one moved pods, so drop them here as well.
+			// The validator only drops pass-scoped reads when it waits. Commands admitted before
+			// this one moved pods and launched replacements, so drop them here as well: this
+			// proposal has to be judged against the cluster those commands left behind.
 			ctx = scheduling.WithTopologyPassCache(ctx, scheduling.NewTopologyPassCache())
+			ctx = WithPassReads(ctx, NewPassReads())
 		}
 		_, err := s.validator.Validate(ctx, proposal.cmd, validationDelay)
 		validationDelay = 0
