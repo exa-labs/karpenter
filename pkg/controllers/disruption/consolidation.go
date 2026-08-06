@@ -412,7 +412,7 @@ func (c *consolidation) retrySpotOnlyReplacements(candidates []*Candidate, newNo
 		// union over every type: a zone that is cheap for one type but spiked for another would put
 		// the spike right back into the other type's worst-case price and re-empty the claim.
 		var zones []string
-		for _, it := range cloudprovider.InstanceTypes(nc.InstanceTypeOptions).Compatible(nc.Requirements).OrderByPrice(nc.Requirements) {
+		for _, it := range nc.InstanceTypeOptions.Compatible(nc.Requirements).OrderByPrice(nc.Requirements) {
 			cheap := lo.Uniq(lo.FilterMap(it.Offerings.Available().Compatible(nc.Requirements), func(of *cloudprovider.Offering, _ int) (string, bool) {
 				return of.Zone(), of.Price < priceBudget
 			}))
@@ -428,10 +428,10 @@ func (c *consolidation) retrySpotOnlyReplacements(candidates []*Candidate, newNo
 		// Types spiked inside the anchor's zones would fail the worst-case re-pricing for the whole
 		// claim, so keep only the types cheap everywhere the launch may land. The anchor type survives
 		// by construction: every zone kept is one of its own cheap zones.
-		nc.InstanceTypeOptions = lo.Filter(cloudprovider.InstanceTypes(nc.InstanceTypeOptions).Compatible(nc.Requirements), func(it *cloudprovider.InstanceType, _ int) bool {
+		nc.InstanceTypeOptions = lo.Filter(nc.InstanceTypeOptions.Compatible(nc.Requirements), func(it *cloudprovider.InstanceType, _ int) bool {
 			return it.Offerings.Available().WorstLaunchPrice(nc.Requirements) < priceBudget
 		})
-		nc.InstanceTypeOptions = cloudprovider.InstanceTypes(nc.InstanceTypeOptions).OrderByPrice(nc.Requirements)
+		nc.InstanceTypeOptions = nc.InstanceTypeOptions.OrderByPrice(nc.Requirements)
 	}
 	if ok, _ := c.filterReplacementsAndPublish(newNodeClaims, candidates, priceBudget, false); !ok {
 		return false
