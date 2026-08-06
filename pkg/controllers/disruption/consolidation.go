@@ -286,11 +286,31 @@ func (c *consolidation) computeConsolidationWithOptions(ctx context.Context, sim
 		return cmd, err
 	}
 
+	// The price filter can empty every replacement's options, so keep a copy to re-price against
+	// spot-only offerings if it does.
+	var spotRetrySnapshots [][]*cloudprovider.InstanceType
+	if c.odToSpotRetryApplies(ctx, candidates, results.NewNodeClaims) {
+		spotRetrySnapshots = lo.Map(results.NewNodeClaims, func(nc *pscheduling.NodeClaim, _ int) []*cloudprovider.InstanceType {
+			return append([]*cloudprovider.InstanceType(nil), nc.InstanceTypeOptions...)
+		})
+	}
+
 	// filterByPrice returns the instanceTypes that are lower priced than the current candidate and any error that indicates the input couldn't be filtered.
 	// If we use this directly for spot-to-spot consolidation, we are bound to get repeated consolidations because the strategy that chooses to launch the spot instance from the list does
 	// it based on availability and price which could result in selection/launch of non-lowest priced instance in the list. So, we would keep repeating this loop till we get to lowest priced instance
 	// causing churns and landing onto lower available spot instance ultimately resulting in higher interruptions.
 	if ok, skipReason := c.filterReplacementsAndPublish(results.NewNodeClaims, candidates, replacementPriceBudget, !simOpts.silent); !ok {
+		if spotRetrySnapshots != nil && c.retrySpotOnlyReplacements(candidates, results.NewNodeClaims, spotRetrySnapshots, replacementPriceBudget) {
+			cmd := Command{
+				Candidates:            candidates,
+				Replacements:          replacementsFromNodeClaims(results.NewNodeClaims...),
+				Results:               results,
+				PoolDisruptionCosts:   computePoolDisruptionCosts(candidates),
+				NewCapacityPriceLimit: simOpts.newCapacityPriceLimit,
+			}
+			cmd.EmitCandidateEvents(c.recorder)
+			return cmd, nil
+		}
 		if splitCmd, ok := c.trySplitConsolidation(ctx, simOpts, candidatePrice, candidates); ok {
 			return splitCmd, nil
 		}
@@ -320,6 +340,58 @@ func (c *consolidation) computeConsolidationWithOptions(ctx context.Context, sim
 	cmd.EmitCandidateEvents(c.recorder)
 
 	return cmd, nil
+}
+
+// odToSpotRetryApplies reports whether the spot-only re-pricing retry is enabled and applicable:
+// every candidate runs on-demand and every replacement claim may launch spot.
+func (c *consolidation) odToSpotRetryApplies(ctx context.Context, candidates []*Candidate, newNodeClaims []*pscheduling.NodeClaim) bool {
+	if !options.FromContext(ctx).ODToSpotConsolidation {
+		return false
+	}
+	if lo.SomeBy(candidates, func(cd *Candidate) bool { return cd.capacityType != v1.CapacityTypeOnDemand }) {
+		return false
+	}
+	return !lo.SomeBy(newNodeClaims, func(nc *pscheduling.NodeClaim) bool {
+		return !nc.Requirements.Get(v1.CapacityTypeLabelKey).Has(v1.CapacityTypeSpot)
+	})
+}
+
+// retrySpotOnlyReplacements re-prices replacement claims that the ordinary filter emptied against
+// spot offerings only. The ordinary filter prices each instance type at its worst-case compatible
+// offering across every zone the claim allows, so one price-spiked spot pool anywhere in the fleet
+// vetoes a replacement even when most zones offer large savings. The retry narrows each claim to
+// spot and to the zones whose spot offerings beat the price budget, then re-prices: the launch is
+// pinned to those zones and to spot, so the worst case it prices is the worst the launch can do,
+// and insufficient spot capacity fails the launch rather than falling back to on-demand.
+// It reports whether every claim retained a viable option; claims are mutated only on success
+// being meaningful (callers discard them otherwise).
+func (c *consolidation) retrySpotOnlyReplacements(candidates []*Candidate, newNodeClaims []*pscheduling.NodeClaim, snapshots [][]*cloudprovider.InstanceType, priceBudget float64) bool {
+	for i, nc := range newNodeClaims {
+		nc.InstanceTypeOptions = snapshots[i]
+		nc.Requirements.Add(scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, v1.CapacityTypeSpot))
+		zones := map[string]struct{}{}
+		for _, it := range nc.InstanceTypeOptions {
+			for _, of := range it.Offerings.Available().Compatible(nc.Requirements) {
+				if of.Price < priceBudget {
+					zones[of.Zone()] = struct{}{}
+				}
+			}
+		}
+		if len(zones) == 0 {
+			return false
+		}
+		nc.Requirements.Add(scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, lo.Keys(zones)...))
+		nc.InstanceTypeOptions = cloudprovider.InstanceTypes(nc.InstanceTypeOptions).Compatible(nc.Requirements).OrderByPrice(nc.Requirements)
+	}
+	if ok, _ := c.filterReplacementsAndPublish(newNodeClaims, candidates, priceBudget, false); !ok {
+		return false
+	}
+	// The replacement lands on spot; cap its options like spot-to-spot consolidation does so the
+	// launched type is within the priced set and doesn't churn straight back into consolidation.
+	for _, nc := range newNodeClaims {
+		truncateSpotInstanceTypeOptions(nc)
+	}
+	return true
 }
 
 // consolidationSchedulerOptions returns the scheduler options a consolidation simulation runs under, capping the
