@@ -395,6 +395,12 @@ func (c *consolidation) odToSpotRetryApplies(ctx context.Context, candidates []*
 	})
 }
 
+// satisfiesMinValues reports whether pinning a requirement down to n values would still satisfy
+// the requirement's declared minValues.
+func satisfiesMinValues(r *scheduling.Requirement, n int) bool {
+	return r == nil || r.MinValues == nil || *r.MinValues <= n
+}
+
 // retrySpotOnlyReplacements re-prices replacement claims that the ordinary filter emptied against
 // spot offerings only. The ordinary filter prices each instance type at its worst-case compatible
 // offering across every zone the claim allows, so one price-spiked spot pool anywhere in the fleet
@@ -407,6 +413,12 @@ func (c *consolidation) odToSpotRetryApplies(ctx context.Context, candidates []*
 func (c *consolidation) retrySpotOnlyReplacements(candidates []*Candidate, newNodeClaims []*pscheduling.NodeClaim, snapshots [][]*cloudprovider.InstanceType, priceBudget float64) bool {
 	for i, nc := range newNodeClaims {
 		nc.InstanceTypeOptions = snapshots[i]
+		// Requirements.Add keeps the larger minValues when intersecting, and the NodeClaim CRD rejects
+		// an In requirement carrying fewer values than its minValues — pinning below that floor would
+		// produce a command whose launch the API server refuses, so bail to the ordinary skip instead.
+		if !satisfiesMinValues(nc.Requirements.Get(v1.CapacityTypeLabelKey), 1) {
+			return false
+		}
 		nc.Requirements.Add(scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, v1.CapacityTypeSpot))
 		// Anchor the zone restriction on the cheapest instance type's own cheap zones rather than the
 		// union over every type: a zone that is cheap for one type but spiked for another would put
@@ -421,7 +433,7 @@ func (c *consolidation) retrySpotOnlyReplacements(candidates []*Candidate, newNo
 				break
 			}
 		}
-		if len(zones) == 0 {
+		if len(zones) == 0 || !satisfiesMinValues(nc.Requirements.Get(corev1.LabelTopologyZone), len(zones)) {
 			return false
 		}
 		nc.Requirements.Add(scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, zones...))

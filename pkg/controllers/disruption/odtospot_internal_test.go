@@ -128,6 +128,30 @@ func TestRetrySpotOnlyReplacementsHandlesDisjointCheapZones(t *testing.T) {
 	}
 }
 
+// A minValues floor on the zone (or capacity type) requirement survives the narrowing intersection
+// and would make the API server reject the launched NodeClaim, so the retry must bail instead.
+func TestRetrySpotOnlyReplacementsRespectsMinValues(t *testing.T) {
+	it := odToSpotInstanceType("inf",
+		odToSpotOffering(v1.CapacityTypeOnDemand, "zone-a", 13.0),
+		odToSpotOffering(v1.CapacityTypeSpot, "zone-a", 1.35),
+		odToSpotOffering(v1.CapacityTypeSpot, "zone-b", 19.5),
+	)
+	nc := odToSpotNodeClaim(it)
+	nc.Requirements.Add(scheduling.NewRequirementWithFlexibility(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, lo.ToPtr(2), "zone-a", "zone-b"))
+	snapshot := [][]*cloudprovider.InstanceType{append([]*cloudprovider.InstanceType(nil), nc.InstanceTypeOptions...)}
+
+	c := &consolidation{}
+	if c.retrySpotOnlyReplacements(nil, []*pscheduling.NodeClaim{nc}, snapshot, 13.0) {
+		t.Fatal("expected the spot-only retry to bail when pinning would violate the zone minValues")
+	}
+
+	nc = odToSpotNodeClaim(it)
+	nc.Requirements.Add(scheduling.NewRequirementWithFlexibility(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, lo.ToPtr(2), v1.CapacityTypeOnDemand, v1.CapacityTypeSpot))
+	if c.retrySpotOnlyReplacements(nil, []*pscheduling.NodeClaim{nc}, snapshot, 13.0) {
+		t.Fatal("expected the spot-only retry to bail when pinning would violate the capacity type minValues")
+	}
+}
+
 // When every spot offering is at or above the budget there is nothing to convert to.
 func TestRetrySpotOnlyReplacementsFailsWithoutCheapSpot(t *testing.T) {
 	it := odToSpotInstanceType("inf",
