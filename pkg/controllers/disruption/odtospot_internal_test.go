@@ -128,6 +128,37 @@ func TestRetrySpotOnlyReplacementsHandlesDisjointCheapZones(t *testing.T) {
 	}
 }
 
+// A split into several replacements must narrow each claim against its share of the aggregate
+// budget: a zone that only beats the whole budget would otherwise be pinned in and inflate the
+// claim's worst-case price past its share, failing the final aggregate filter.
+func TestRetrySpotOnlyReplacementsUsesPerClaimBudgetForSplits(t *testing.T) {
+	newIT := func() *cloudprovider.InstanceType {
+		return odToSpotInstanceType("inf",
+			odToSpotOffering(v1.CapacityTypeOnDemand, "zone-a", 6.5),
+			odToSpotOffering(v1.CapacityTypeSpot, "zone-a", 1.35),
+			odToSpotOffering(v1.CapacityTypeSpot, "zone-b", 12.0),
+		)
+	}
+	nc1, nc2 := odToSpotNodeClaim(newIT()), odToSpotNodeClaim(newIT())
+	snapshots := [][]*cloudprovider.InstanceType{
+		append([]*cloudprovider.InstanceType(nil), nc1.InstanceTypeOptions...),
+		append([]*cloudprovider.InstanceType(nil), nc2.InstanceTypeOptions...),
+	}
+
+	c := &consolidation{}
+	// Aggregate budget 13: zone-b's 12.0 beats it but not the per-claim share of 6.5. If zone-b were
+	// pinned, each claim's worst-case price would be 12.0 and the 24.0 total would fail the final
+	// aggregate filter; anchored on the per-claim share, both land in zone-a at 1.35.
+	if !c.retrySpotOnlyReplacements(nil, []*pscheduling.NodeClaim{nc1, nc2}, snapshots, 13.0) {
+		t.Fatal("expected the spot-only retry to succeed for the split")
+	}
+	for _, nc := range []*pscheduling.NodeClaim{nc1, nc2} {
+		if got := nc.Requirements.Get(corev1.LabelTopologyZone).Values(); len(got) != 1 || got[0] != "zone-a" {
+			t.Errorf("zone requirement = %v, want [zone-a]", got)
+		}
+	}
+}
+
 // A minValues floor on the zone (or capacity type) requirement survives the narrowing intersection
 // and would make the API server reject the launched NodeClaim, so the retry must bail instead.
 func TestRetrySpotOnlyReplacementsRespectsMinValues(t *testing.T) {

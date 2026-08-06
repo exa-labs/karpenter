@@ -411,6 +411,11 @@ func satisfiesMinValues(r *scheduling.Requirement, n int) bool {
 // It reports whether every claim retained a viable option; claims are mutated only on success
 // being meaningful (callers discard them otherwise).
 func (c *consolidation) retrySpotOnlyReplacements(candidates []*Candidate, newNodeClaims []*pscheduling.NodeClaim, snapshots [][]*cloudprovider.InstanceType, priceBudget float64) bool {
+	// priceBudget is the aggregate across every replacement claim; a zone or type that is only cheap
+	// relative to the whole budget would get pinned into one claim and inflate its worst-case price
+	// past its share, so the narrowing below uses each claim's equal share. The aggregate filter at
+	// the end remains the authoritative price guarantee.
+	claimBudget := priceBudget / float64(len(newNodeClaims))
 	for i, nc := range newNodeClaims {
 		nc.InstanceTypeOptions = snapshots[i]
 		// Requirements.Add keeps the larger minValues when intersecting, and the NodeClaim CRD rejects
@@ -426,7 +431,7 @@ func (c *consolidation) retrySpotOnlyReplacements(candidates []*Candidate, newNo
 		var zones []string
 		for _, it := range nc.InstanceTypeOptions.Compatible(nc.Requirements).OrderByPrice(nc.Requirements) {
 			cheap := lo.Uniq(lo.FilterMap(it.Offerings.Available().Compatible(nc.Requirements), func(of *cloudprovider.Offering, _ int) (string, bool) {
-				return of.Zone(), of.Price < priceBudget
+				return of.Zone(), of.Price < claimBudget
 			}))
 			if len(cheap) != 0 {
 				zones = cheap
@@ -441,7 +446,7 @@ func (c *consolidation) retrySpotOnlyReplacements(candidates []*Candidate, newNo
 		// claim, so keep only the types cheap everywhere the launch may land. The anchor type survives
 		// by construction: every zone kept is one of its own cheap zones.
 		nc.InstanceTypeOptions = lo.Filter(nc.InstanceTypeOptions.Compatible(nc.Requirements), func(it *cloudprovider.InstanceType, _ int) bool {
-			return it.Offerings.Available().WorstLaunchPrice(nc.Requirements) < priceBudget
+			return it.Offerings.Available().WorstLaunchPrice(nc.Requirements) < claimBudget
 		})
 		nc.InstanceTypeOptions = nc.InstanceTypeOptions.OrderByPrice(nc.Requirements)
 	}
