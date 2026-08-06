@@ -299,17 +299,22 @@ func (c *consolidation) computeConsolidationWithOptions(ctx context.Context, sim
 	// If we use this directly for spot-to-spot consolidation, we are bound to get repeated consolidations because the strategy that chooses to launch the spot instance from the list does
 	// it based on availability and price which could result in selection/launch of non-lowest priced instance in the list. So, we would keep repeating this loop till we get to lowest priced instance
 	// causing churns and landing onto lower available spot instance ultimately resulting in higher interruptions.
-	if ok, skipReason := c.filterReplacementsAndPublish(results.NewNodeClaims, candidates, replacementPriceBudget, !simOpts.silent); !ok {
-		if spotRetrySnapshots != nil && c.retrySpotOnlyReplacements(candidates, results.NewNodeClaims, spotRetrySnapshots, replacementPriceBudget) {
-			cmd := Command{
-				Candidates:            candidates,
-				Replacements:          replacementsFromNodeClaims(results.NewNodeClaims...),
-				Results:               results,
-				PoolDisruptionCosts:   computePoolDisruptionCosts(candidates),
-				NewCapacityPriceLimit: simOpts.newCapacityPriceLimit,
+	// When the spot-only retry is armed, hold the "can't replace" event back until the retry also
+	// fails: it may still turn the candidate into a replace command.
+	if ok, skipReason := c.filterReplacementsAndPublish(results.NewNodeClaims, candidates, replacementPriceBudget, !simOpts.silent && spotRetrySnapshots == nil); !ok {
+		if spotRetrySnapshots != nil {
+			if c.retrySpotOnlyReplacements(candidates, results.NewNodeClaims, spotRetrySnapshots, replacementPriceBudget) {
+				cmd := Command{
+					Candidates:            candidates,
+					Replacements:          replacementsFromNodeClaims(results.NewNodeClaims...),
+					Results:               results,
+					PoolDisruptionCosts:   computePoolDisruptionCosts(candidates),
+					NewCapacityPriceLimit: simOpts.newCapacityPriceLimit,
+				}
+				cmd.EmitCandidateEvents(c.recorder)
+				return cmd, nil
 			}
-			cmd.EmitCandidateEvents(c.recorder)
-			return cmd, nil
+			c.publishCantReplace(results.NewNodeClaims, candidates, !simOpts.silent)
 		}
 		if splitCmd, ok := c.trySplitConsolidation(ctx, simOpts, candidatePrice, candidates); ok {
 			return splitCmd, nil
