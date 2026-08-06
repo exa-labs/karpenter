@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
@@ -95,6 +96,35 @@ func TestRetrySpotOnlyReplacementsExcludesSpikedZones(t *testing.T) {
 	}
 	if len(nc.InstanceTypeOptions) != 1 {
 		t.Errorf("kept %d instance type options, want 1", len(nc.InstanceTypeOptions))
+	}
+}
+
+// Two instance types cheap in opposite zones must not veto each other: the zone restriction anchors
+// on the cheapest type's cheap zones and drops the types spiked inside them, instead of unioning
+// every type's cheap zones and re-importing the spikes.
+func TestRetrySpotOnlyReplacementsHandlesDisjointCheapZones(t *testing.T) {
+	itA := odToSpotInstanceType("inf-a",
+		odToSpotOffering(v1.CapacityTypeOnDemand, "zone-a", 13.0),
+		odToSpotOffering(v1.CapacityTypeSpot, "zone-a", 1.35),
+		odToSpotOffering(v1.CapacityTypeSpot, "zone-b", 19.5),
+	)
+	itB := odToSpotInstanceType("inf-b",
+		odToSpotOffering(v1.CapacityTypeOnDemand, "zone-b", 13.0),
+		odToSpotOffering(v1.CapacityTypeSpot, "zone-b", 1.5),
+		odToSpotOffering(v1.CapacityTypeSpot, "zone-a", 20.0),
+	)
+	nc := odToSpotNodeClaim(itA, itB)
+	snapshot := [][]*cloudprovider.InstanceType{append([]*cloudprovider.InstanceType(nil), nc.InstanceTypeOptions...)}
+
+	c := &consolidation{}
+	if !c.retrySpotOnlyReplacements(nil, []*pscheduling.NodeClaim{nc}, snapshot, 13.0) {
+		t.Fatal("expected the spot-only retry to succeed")
+	}
+	if got := nc.Requirements.Get(corev1.LabelTopologyZone).Values(); len(got) != 1 || got[0] != "zone-a" {
+		t.Errorf("zone requirement = %v, want [zone-a]", got)
+	}
+	if len(nc.InstanceTypeOptions) != 1 || nc.InstanceTypeOptions[0].Name != "inf-a" {
+		t.Errorf("instance type options = %v, want [inf-a]", lo.Map(nc.InstanceTypeOptions, func(it *cloudprovider.InstanceType, _ int) string { return it.Name }))
 	}
 }
 

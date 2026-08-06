@@ -374,19 +374,30 @@ func (c *consolidation) retrySpotOnlyReplacements(candidates []*Candidate, newNo
 	for i, nc := range newNodeClaims {
 		nc.InstanceTypeOptions = snapshots[i]
 		nc.Requirements.Add(scheduling.NewRequirement(v1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, v1.CapacityTypeSpot))
-		zones := map[string]struct{}{}
-		for _, it := range nc.InstanceTypeOptions {
-			for _, of := range it.Offerings.Available().Compatible(nc.Requirements) {
-				if of.Price < priceBudget {
-					zones[of.Zone()] = struct{}{}
-				}
+		// Anchor the zone restriction on the cheapest instance type's own cheap zones rather than the
+		// union over every type: a zone that is cheap for one type but spiked for another would put
+		// the spike right back into the other type's worst-case price and re-empty the claim.
+		var zones []string
+		for _, it := range cloudprovider.InstanceTypes(nc.InstanceTypeOptions).Compatible(nc.Requirements).OrderByPrice(nc.Requirements) {
+			cheap := lo.Uniq(lo.FilterMap(it.Offerings.Available().Compatible(nc.Requirements), func(of *cloudprovider.Offering, _ int) (string, bool) {
+				return of.Zone(), of.Price < priceBudget
+			}))
+			if len(cheap) != 0 {
+				zones = cheap
+				break
 			}
 		}
 		if len(zones) == 0 {
 			return false
 		}
-		nc.Requirements.Add(scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, lo.Keys(zones)...))
-		nc.InstanceTypeOptions = cloudprovider.InstanceTypes(nc.InstanceTypeOptions).Compatible(nc.Requirements).OrderByPrice(nc.Requirements)
+		nc.Requirements.Add(scheduling.NewRequirement(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, zones...))
+		// Types spiked inside the anchor's zones would fail the worst-case re-pricing for the whole
+		// claim, so keep only the types cheap everywhere the launch may land. The anchor type survives
+		// by construction: every zone kept is one of its own cheap zones.
+		nc.InstanceTypeOptions = lo.Filter(cloudprovider.InstanceTypes(nc.InstanceTypeOptions).Compatible(nc.Requirements), func(it *cloudprovider.InstanceType, _ int) bool {
+			return it.Offerings.Available().WorstLaunchPrice(nc.Requirements) < priceBudget
+		})
+		nc.InstanceTypeOptions = cloudprovider.InstanceTypes(nc.InstanceTypeOptions).OrderByPrice(nc.Requirements)
 	}
 	if ok, _ := c.filterReplacementsAndPublish(newNodeClaims, candidates, priceBudget, false); !ok {
 		return false
