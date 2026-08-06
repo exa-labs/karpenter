@@ -75,7 +75,7 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 	// start by getting all pending pods
 	endPodGather := startPassStage(ctx, stagePodGather)
 	defer endPodGather()
-	pods, err := provisioner.GetPendingPods(ctx)
+	pods, err := pendingPodsForPass(ctx, provisioner)
 	if err != nil {
 		return scheduling.Results{}, fmt.Errorf("determining pending pods, %w", err)
 	}
@@ -83,7 +83,7 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 	// Don't provision capacity for pods which will not get evicted due to fully blocking PDBs.
 	// Since Karpenter doesn't know when these pods will be successfully evicted, spinning up capacity until
 	// these pods are evicted is wasteful.
-	pdbs, err := pdb.NewLimits(ctx, kubeClient)
+	pdbs, err := pdbLimitsForPass(ctx, kubeClient)
 	if err != nil {
 		return scheduling.Results{}, fmt.Errorf("tracking PodDisruptionBudgets, %w", err)
 	}
@@ -156,6 +156,12 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 		})
 	}
 	results = results.TruncateInstanceTypes(ctx, scheduling.MaxInstanceTypes)
+	// Consolidation prices its command from this slice and counts it against the replacement bound,
+	// so a claim it did not cause distorts the decision. Drift and the other methods replace their
+	// candidate whatever the simulation costs, so they keep the unattributed contract.
+	if consolidationTypeFromContext(ctx) != "" && options.FromContext(ctx).ConsolidationAttributeReplacements {
+		results.NewNodeClaims = replacementsAttributableToDisruption(results.NewNodeClaims, deletingPodUIDs, candidatePodsWithheld(candidates, candidatePods))
+	}
 	for _, n := range results.ExistingNodes {
 		// We consider existing nodes for scheduling. When these nodes are unmanaged, their taint logic should
 		// tell us if we can schedule to them or not; however, if these nodes are managed, we will still schedule to them
@@ -177,6 +183,56 @@ func SimulateScheduling(ctx context.Context, kubeClient client.Client, cluster *
 		}
 	}
 	return results, nil
+}
+
+// replacementsAttributableToDisruption keeps the new NodeClaims a disruption is responsible for and
+// drops the ones the simulation created for the pending pod backlog.
+//
+// A consolidation simulation schedules the candidate's pods alongside every pending pod in the
+// cluster, because that backlog competes for the same capacity. The solve does not distinguish
+// between them in its output: a claim opened for pods the provisioner is already launching capacity
+// for arrives in the same NewNodeClaims slice as the candidate's replacement. Consolidation then
+// reads that claim as part of its command, which turns a delete into a replacement, counts against
+// MaxConsolidationReplacements, and is priced against the candidate.
+//
+// The distortion is invisible while the backlog is empty, and on gaia production the
+// multiple_replacements_required skip rate per evaluated candidate tracks it directly: ~0.000 below
+// 100 pending pods, 0.045 at 2,049 and 0.222 at 2,781.
+//
+// A claim hosting any disrupted pod is kept whole, including one that also absorbs backlog pods:
+// the disruption still needs it. Dropping a backlog-only claim does not strand its pods, which stay
+// pending for the provisioning loop that owns them.
+//
+// Pods on already-deleting nodes count as disrupted here even though another decision evicted them.
+// They are not backlog: no provisioning loop owns them until they are actually evicted, and a pass
+// that admits several commands re-simulates each proposal against the nodes the earlier ones just
+// marked for deletion. Excluding them lets a later proposal spend capacity an earlier command in
+// the same pass already claimed.
+//
+// A simulation whose candidates had pods but contributed none of them is left alone rather than
+// reduced to a delete. Nothing there is attributable either, but that shape means the pods were
+// withheld from the simulation by a PDB that currently allows no disruption, and turning that into
+// a delete of a node the simulation never placed pods for is a change this is not making. An empty
+// candidate is not that shape: it has nothing to reschedule, so dropping the backlog's claims
+// leaves the delete it already was.
+func replacementsAttributableToDisruption(newNodeClaims []*scheduling.NodeClaim, disruptedPodUIDs sets.Set[types.UID], podsWithheld bool) []*scheduling.NodeClaim {
+	if len(newNodeClaims) == 0 || podsWithheld {
+		return newNodeClaims
+	}
+	return lo.Filter(newNodeClaims, func(nc *scheduling.NodeClaim, _ int) bool {
+		return lo.SomeBy(nc.Pods, func(p *corev1.Pod) bool { return disruptedPodUIDs.Has(p.UID) })
+	})
+}
+
+// candidatePodsWithheld reports whether the candidates hold reschedulable pods that no longer
+// reached the simulation, which happens when their PDBs currently allow no disruption.
+//
+// The disrupted set the filter runs against also holds every pod on an already-deleting node
+// cluster-wide, so it is non-empty in a churning cluster whatever the candidate contributed. Asking
+// the candidates directly keeps the escape hatch about the candidate, not about the rest of the
+// fleet.
+func candidatePodsWithheld(candidates []*Candidate, candidatePods []*corev1.Pod) bool {
+	return len(candidatePods) == 0 && lo.SomeBy(candidates, func(c *Candidate) bool { return len(c.reschedulablePods) > 0 })
 }
 
 // UninitializedNodeError tracks a special pod error for disruption where pods schedule to a node

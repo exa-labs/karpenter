@@ -28,35 +28,37 @@ import (
 
 type OptionsFields struct {
 	// Vendor Neutral
-	ServiceName                      *string
-	MetricsPort                      *int
-	HealthProbePort                  *int
-	KubeClientQPS                    *int
-	KubeClientBurst                  *int
-	EnableProfiling                  *bool
-	DisableControllerWarmup          *bool
-	DisableLeaderElection            *bool
-	DisableClusterStateObservability *bool
-	LeaderElectionName               *string
-	LeaderElectionNamespace          *string
-	MemoryLimit                      *int64
-	CPURequests                      *int64
-	LogLevel                         *string
-	LogOutputPaths                   *string
-	LogErrorOutputPaths              *string
-	PreferencePolicy                 *options.PreferencePolicy
-	MinValuesPolicy                  *options.MinValuesPolicy
-	BatchMaxDuration                 *time.Duration
-	BatchIdleDuration                *time.Duration
-	NodeMetricsInterval              *time.Duration
-	IgnoreDRARequests                *bool
-	MaxConsolidationReplacements     *int
-	MaxConsolidationCommandsPerPass  *int
-	ConsolidationSplitFallback       *bool
-	ConsolidationSplitMaxAttempts    *int
-	ConsolidationSplitMinSavings     *float64
-	ODToSpotConsolidation            *bool
-	FeatureGates                     FeatureGates
+	ServiceName                        *string
+	MetricsPort                        *int
+	HealthProbePort                    *int
+	KubeClientQPS                      *int
+	KubeClientBurst                    *int
+	EnableProfiling                    *bool
+	DisableControllerWarmup            *bool
+	DisableLeaderElection              *bool
+	DisableClusterStateObservability   *bool
+	LeaderElectionName                 *string
+	LeaderElectionNamespace            *string
+	MemoryLimit                        *int64
+	CPURequests                        *int64
+	LogLevel                           *string
+	LogOutputPaths                     *string
+	LogErrorOutputPaths                *string
+	PreferencePolicy                   *options.PreferencePolicy
+	MinValuesPolicy                    *options.MinValuesPolicy
+	BatchMaxDuration                   *time.Duration
+	BatchIdleDuration                  *time.Duration
+	NodeMetricsInterval                *time.Duration
+	IgnoreDRARequests                  *bool
+	MaxConsolidationReplacements       *int
+	MaxConsolidationCommandsPerPass    *int
+	ConsolidationSplitFallback         *bool
+	ConsolidationSplitMaxAttempts      *int
+	ConsolidationSplitMinSavings       *float64
+	ConsolidationCandidateTimeout      *time.Duration
+	ConsolidationAttributeReplacements *bool
+	ODToSpotConsolidation              *bool
+	FeatureGates                       FeatureGates
 }
 
 type FeatureGates struct {
@@ -102,7 +104,11 @@ func Options(overrides ...OptionsFields) *options.Options {
 		ConsolidationSplitFallback:       lo.FromPtrOr(opts.ConsolidationSplitFallback, false),
 		ConsolidationSplitMaxAttempts:    lo.FromPtrOr(opts.ConsolidationSplitMaxAttempts, 50),
 		ConsolidationSplitMinSavings:     lo.FromPtrOr(opts.ConsolidationSplitMinSavings, 0.05),
-		ODToSpotConsolidation:            lo.FromPtrOr(opts.ODToSpotConsolidation, false),
+		// Tests drive a fake clock, and a per-candidate deadline is wall-clock, so it is off by
+		// default here: a suite opts in when it is what is under test.
+		ConsolidationCandidateTimeout:      lo.FromPtrOr(opts.ConsolidationCandidateTimeout, 0),
+		ConsolidationAttributeReplacements: lo.FromPtrOr(opts.ConsolidationAttributeReplacements, true),
+		ODToSpotConsolidation:              lo.FromPtrOr(opts.ODToSpotConsolidation, false),
 		FeatureGates: options.FeatureGates{
 			NodeRepair:              lo.FromPtrOr(opts.FeatureGates.NodeRepair, false),
 			ReservedCapacity:        lo.FromPtrOr(opts.FeatureGates.ReservedCapacity, true),

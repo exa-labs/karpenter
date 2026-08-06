@@ -66,37 +66,39 @@ type FeatureGates struct {
 
 // Options contains all CLI flags / env vars for karpenter-core. It adheres to the options.Injectable interface.
 type Options struct {
-	ServiceName                      string
-	MetricsPort                      int
-	HealthProbePort                  int
-	KubeClientQPS                    int
-	KubeClientBurst                  int
-	EnableProfiling                  bool
-	DisableControllerWarmup          bool
-	DisableLeaderElection            bool
-	DisableClusterStateObservability bool
-	LeaderElectionName               string
-	LeaderElectionNamespace          string
-	MemoryLimit                      int64
-	CPURequests                      int64
-	LogLevel                         string
-	LogOutputPaths                   string
-	LogErrorOutputPaths              string
-	BatchMaxDuration                 time.Duration
-	BatchIdleDuration                time.Duration
-	NodeMetricsInterval              time.Duration
-	preferencePolicyRaw              string
-	PreferencePolicy                 PreferencePolicy
-	minValuesPolicyRaw               string
-	MinValuesPolicy                  MinValuesPolicy
-	IgnoreDRARequests                bool // NOTE: This flag will be removed once formal DRA support is GA in Karpenter.
-	MaxConsolidationReplacements     int
-	MaxConsolidationCommandsPerPass  int
-	ConsolidationSplitFallback       bool
-	ConsolidationSplitMaxAttempts    int
-	ConsolidationSplitMinSavings     float64
-	ODToSpotConsolidation            bool
-	FeatureGates                     FeatureGates
+	ServiceName                        string
+	MetricsPort                        int
+	HealthProbePort                    int
+	KubeClientQPS                      int
+	KubeClientBurst                    int
+	EnableProfiling                    bool
+	DisableControllerWarmup            bool
+	DisableLeaderElection              bool
+	DisableClusterStateObservability   bool
+	LeaderElectionName                 string
+	LeaderElectionNamespace            string
+	MemoryLimit                        int64
+	CPURequests                        int64
+	LogLevel                           string
+	LogOutputPaths                     string
+	LogErrorOutputPaths                string
+	BatchMaxDuration                   time.Duration
+	BatchIdleDuration                  time.Duration
+	NodeMetricsInterval                time.Duration
+	preferencePolicyRaw                string
+	PreferencePolicy                   PreferencePolicy
+	minValuesPolicyRaw                 string
+	MinValuesPolicy                    MinValuesPolicy
+	IgnoreDRARequests                  bool // NOTE: This flag will be removed once formal DRA support is GA in Karpenter.
+	MaxConsolidationReplacements       int
+	MaxConsolidationCommandsPerPass    int
+	ConsolidationSplitFallback         bool
+	ConsolidationSplitMaxAttempts      int
+	ConsolidationSplitMinSavings       float64
+	ConsolidationCandidateTimeout      time.Duration
+	ConsolidationAttributeReplacements bool
+	ODToSpotConsolidation              bool
+	FeatureGates                       FeatureGates
 }
 
 type FlagSet struct {
@@ -142,6 +144,8 @@ func (o *Options) AddFlags(fs *FlagSet) {
 	fs.IntVar(&o.MaxConsolidationCommandsPerPass, "max-consolidation-commands-per-pass", env.WithDefaultInt("MAX_CONSOLIDATION_COMMANDS_PER_PASS", 1), "The maximum number of disruption commands a single single-node consolidation pass may admit. 1 preserves the classic one-command-per-pass behavior; higher values let a pass that has already paid for candidate discovery admit several non-overlapping commands, each still validated against live cluster state immediately before it is queued.")
 	fs.BoolVarWithEnv(&o.ConsolidationSplitFallback, "consolidation-split-fallback", "CONSOLIDATION_SPLIT_FALLBACK", false, "When set, a single-node consolidation candidate that no cheaper single replacement can absorb is re-simulated with the candidate's own price as a ceiling on new capacity, so the scheduler packs its pods onto several cheaper nodes instead. Bounded by max-consolidation-replacements and consolidation-split-max-attempts.")
 	fs.IntVar(&o.ConsolidationSplitMaxAttempts, "consolidation-split-max-attempts", env.WithDefaultInt("CONSOLIDATION_SPLIT_MAX_ATTEMPTS", 50), "The maximum number of split fallback simulations a single consolidation pass may run. Each attempt costs an extra scheduling simulation, so this caps how much of the pass timeout the fallback can consume at the expense of candidate traversal depth. 0 disables the fallback.")
+	fs.DurationVar(&o.ConsolidationCandidateTimeout, "consolidation-candidate-timeout", env.WithDefaultDuration("CONSOLIDATION_CANDIDATE_TIMEOUT", 10*time.Second), "The maximum time a single consolidation candidate's scheduling simulation may run before it is abandoned and the walk moves on. The pass timeout bounds discovery in aggregate; this bounds one candidate, so a pass degrades into finding fewer commands rather than none. 0 disables the per-candidate bound.")
+	fs.BoolVar(&o.ConsolidationAttributeReplacements, "consolidation-attribute-replacements", env.WithDefaultBool("CONSOLIDATION_ATTRIBUTE_REPLACEMENTS", true), "Count only the new NodeClaims that host a disrupted pod as a command's replacements. A consolidation simulation also schedules the cluster's pending pods, and the capacity it opens for them would otherwise be priced against the candidate and counted against the replacement bound. Disable to restore the unattributed behavior.")
 	fs.BoolVarWithEnv(&o.ODToSpotConsolidation, "od-to-spot-consolidation", "OD_TO_SPOT_CONSOLIDATION", false, "When set, a consolidation candidate running on-demand whose replacement found nothing cheaper is re-evaluated against spot offerings only, restricted to the zones whose spot price beats the candidate. The replacement launch is pinned to spot and those zones, so insufficient spot capacity fails the launch instead of falling back to on-demand.")
 	fs.Float64Var(&o.ConsolidationSplitMinSavings, "consolidation-split-min-savings", env.WithDefaultFloat64("CONSOLIDATION_SPLIT_MIN_SAVINGS", 0.05), "The fraction of a candidate's price that a split replacement must save before it is accepted, on top of the usual cheaper-than-candidate check. Guards against churning a node into several nodes for a negligible price difference.")
 	fs.BoolVarWithEnv(&o.IgnoreDRARequests, "ignore-dra-requests", "IGNORE_DRA_REQUESTS", true, "When set, Karpenter will ignore pods' DRA requests during scheduling simulations. NOTE: This flag will be removed once formal DRA support is GA in Karpenter.")
@@ -189,6 +193,9 @@ func (o *Options) validateConsolidation() error {
 	}
 	if o.ConsolidationSplitMaxAttempts < 0 {
 		return fmt.Errorf("validating cli flags / env vars, CONSOLIDATION_SPLIT_MAX_ATTEMPTS must be >= 0, got %d", o.ConsolidationSplitMaxAttempts)
+	}
+	if o.ConsolidationCandidateTimeout < 0 {
+		return fmt.Errorf("validating cli flags / env vars, CONSOLIDATION_CANDIDATE_TIMEOUT must be >= 0, got %s", o.ConsolidationCandidateTimeout)
 	}
 	if o.ConsolidationSplitMinSavings < 0 || o.ConsolidationSplitMinSavings >= 1 {
 		return fmt.Errorf("validating cli flags / env vars, CONSOLIDATION_SPLIT_MIN_SAVINGS must be in [0, 1), got %f", o.ConsolidationSplitMinSavings)
