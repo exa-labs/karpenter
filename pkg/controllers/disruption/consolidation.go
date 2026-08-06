@@ -314,7 +314,7 @@ func (c *consolidation) computeConsolidationWithOptions(ctx context.Context, sim
 				cmd.EmitCandidateEvents(c.recorder)
 				return cmd, nil
 			}
-			c.publishCantReplace(results.NewNodeClaims, candidates, !simOpts.silent)
+			c.publishReplacementSkip(results.NewNodeClaims, candidates, skipReason, !simOpts.silent)
 		}
 		if splitCmd, ok := c.trySplitConsolidation(ctx, simOpts, candidatePrice, candidates); ok {
 			return splitCmd, nil
@@ -540,6 +540,18 @@ func (c *consolidation) publishCantReplace(newNodeClaims []*pscheduling.NodeClai
 		return
 	}
 	c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, fmt.Sprintf("Can't replace with %s", lo.Ternary(len(newNodeClaims) == 1, "a cheaper node", "cheaper nodes")))...)
+}
+
+// publishReplacementSkip replays the event the ordinary filter would have published, matched to the
+// skip reason it returned, once the spot-only retry has also failed to produce a command.
+func (c *consolidation) publishReplacementSkip(newNodeClaims []*pscheduling.NodeClaim, candidates []*Candidate, skipReason string, publishEvents bool) {
+	if skipReason == CandidateSkipReplacementFlexibility {
+		if len(candidates) == 1 && publishEvents {
+			c.recorder.Publish(disruptionevents.Unconsolidatable(candidates[0].Node, candidates[0].NodeClaim, "Filtering by price: replacement instance type options do not satisfy the minValues requirements")...)
+		}
+		return
+	}
+	c.publishCantReplace(newNodeClaims, candidates, publishEvents)
 }
 
 // truncateSpotInstanceTypeOptions caps a replacement NodeClaim's instance type options to the 15 cheapest (or the
