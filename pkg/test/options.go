@@ -57,6 +57,7 @@ type OptionsFields struct {
 	ConsolidationSplitMinSavings       *float64
 	ConsolidationCandidateTimeout      *time.Duration
 	ConsolidationAttributeReplacements *bool
+	ODToSpotConsolidation              *bool
 	FeatureGates                       FeatureGates
 }
 
@@ -107,6 +108,7 @@ func Options(overrides ...OptionsFields) *options.Options {
 		// default here: a suite opts in when it is what is under test.
 		ConsolidationCandidateTimeout:      lo.FromPtrOr(opts.ConsolidationCandidateTimeout, 0),
 		ConsolidationAttributeReplacements: lo.FromPtrOr(opts.ConsolidationAttributeReplacements, true),
+		ODToSpotConsolidation:              lo.FromPtrOr(opts.ODToSpotConsolidation, false),
 		FeatureGates: options.FeatureGates{
 			NodeRepair:              lo.FromPtrOr(opts.FeatureGates.NodeRepair, false),
 			ReservedCapacity:        lo.FromPtrOr(opts.FeatureGates.ReservedCapacity, true),

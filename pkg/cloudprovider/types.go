@@ -593,7 +593,11 @@ func (ofs Offerings) MostExpensive() *Offering {
 
 // WorstLaunchPrice gets the worst-case launch price from the offerings that are offered on an instance type. Only
 // offerings for the capacity type we will launch with are considered. The following precedence order is used to
-// determine which capacity type is used: reserved, spot, on-demand.
+// determine which capacity type is used: reserved, spot, on-demand. Because only the single preferred capacity
+// type's offerings are priced, a claim that allows both spot and on-demand is priced against its spot offerings
+// only — the on-demand prices never enter the comparison. The worst case is instead the most expensive compatible
+// offering of that capacity type across every zone the requirements allow, so a single price-spiked spot zone can
+// dominate the result.
 func (ofs Offerings) WorstLaunchPrice(reqs scheduling.Requirements) float64 {
 	for _, ctReqs := range []scheduling.Requirements{
 		ReservedRequirement,
