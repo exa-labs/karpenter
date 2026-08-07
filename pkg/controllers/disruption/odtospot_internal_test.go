@@ -82,7 +82,7 @@ func TestRetrySpotOnlyReplacementsExcludesSpikedZones(t *testing.T) {
 
 	c := &consolidation{}
 	// The ordinary filter rejects: worst spot across zones is 19.5 >= 13.
-	if ok, reason := c.filterReplacementsAndPublish([]*pscheduling.NodeClaim{nc}, nil, 13.0, false); ok || reason != CandidateSkipNoCheaperSingleReplacement {
+	if ok, reason, _ := c.filterReplacementsAndPublish([]*pscheduling.NodeClaim{nc}, nil, 13.0, false); ok || reason != CandidateSkipNoCheaperSingleReplacement {
 		t.Fatalf("filterReplacementsAndPublish() = (%t, %q), want rejection with %q", ok, reason, CandidateSkipNoCheaperSingleReplacement)
 	}
 	if !c.retrySpotOnlyReplacements(nil, []*pscheduling.NodeClaim{nc}, snapshot, 13.0) {

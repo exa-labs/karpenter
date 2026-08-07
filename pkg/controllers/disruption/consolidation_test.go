@@ -2834,10 +2834,14 @@ var _ = Describe("Consolidation", func() {
 
 			Expect(queue.GetCommands()).To(BeEmpty())
 			ExpectExists(ctx, env.Client, nodeClaim)
-			_, ok := lo.Find(recorder.Events(), func(e events.Event) bool {
+			evt, ok := lo.Find(recorder.Events(), func(e events.Event) bool {
 				return strings.Contains(e.Message, "Can't replace with a cheaper node")
 			})
 			Expect(ok).To(BeTrue())
+			// The event names the offering the price comparison was made against, making it auditable
+			// that the priced capacity type was spot (not on-demand) and which zone set the worst case.
+			Expect(evt.Message).To(ContainSubstring("prices worst-case at"))
+			Expect(evt.Message).To(ContainSubstring("for spot in"))
 		})
 		It("does not retry a spot candidate", func() {
 			ctx = options.ToContext(ctx, test.Options(test.OptionsFields{ODToSpotConsolidation: lo.ToPtr(true)}))
